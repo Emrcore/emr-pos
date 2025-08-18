@@ -1,5 +1,4 @@
-{
-  "name": "emr-pos-desktop",
+"name": "emr-pos-desktop",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -26,7 +25,7 @@
     "cross-env": "^7.0.3",
     "electron": "^31.3.0",
     "electron-builder": "^24.13.3",
-    "electron-rebuild": "^3.7.0",
+    "@electron/rebuild": "^3.6.1",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.12",
     "vite": "^5.4.19"
@@ -34,10 +33,9 @@
   "build": {
     "appId": "com.emrcore.pos",
     "productName": "EMR POS",
-    "directories": {
-      "output": "release"
-    },
+    "directories": { "output": "release" },
     "artifactName": "EMR-POS-${version}-Setup.${ext}",
+    "asar": true,
     "files": [
       "electron/**/*",
       "shared-db/**/*",
@@ -46,13 +44,15 @@
       "index.html"
     ],
     "extraResources": [
-      {
-        "from": "electron/ip-config.json",
-        "to": "electron/ip-config.json"
-      }
+      { "from": "electron/ip-config.json", "to": "electron/ip-config.json" }
     ],
-    "win": {
-      "target": ["nsis"]
+    "win": { "target": ["nsis"] },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "shortcutName": "EMR POS"
     },
     "publish": ["github"]
   }
