@@ -35,8 +35,9 @@
     "appId": "com.emrcore.pos",
     "productName": "EMR POS",
     "directories": {
-      "output": "dist"
+      "output": "release"
     },
+    "artifactName": "EMR-POS-${version}-Setup.${ext}",
     "files": [
       "electron/**/*",
       "shared-db/**/*",
@@ -51,9 +52,8 @@
       }
     ],
     "win": {
-      "target": [
-        "nsis"
-      ]
-    }
+      "target": ["nsis"]
+    },
+    "publish": ["github"]
   }
 }
