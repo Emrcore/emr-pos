@@ -1,5 +1,5 @@
 {
-"name": "emr-pos-desktop",
+  "name": "emr-pos-desktop",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -9,7 +9,7 @@
     "build:renderer": "vite build",
     "build": "npm run build:renderer && electron-builder",
     "start": "xvfb-run -a electron --no-sandbox --disable-gpu .",
-    "postinstall": "electron-rebuild -w better-sqlite3"
+    "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",
@@ -34,7 +34,9 @@
   "build": {
     "appId": "com.emrcore.pos",
     "productName": "EMR POS",
-    "directories": { "output": "release" },
+    "directories": {
+      "output": "release"
+    },
     "artifactName": "EMR-POS-${version}-Setup.${ext}",
     "asar": true,
     "files": [
@@ -45,9 +47,16 @@
       "index.html"
     ],
     "extraResources": [
-      { "from": "electron/ip-config.json", "to": "electron/ip-config.json" }
+      {
+        "from": "electron/ip-config.json",
+        "to": "electron/ip-config.json"
+      }
     ],
-    "win": { "target": ["nsis"] },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
     "nsis": {
       "oneClick": true,
       "perMachine": false,
@@ -55,6 +64,14 @@
       "createDesktopShortcut": true,
       "shortcutName": "EMR POS"
     },
-    "publish": ["github"]
-  }
+    "publish": [
+      "github"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Emrcore/emr-pos.git"
+  },
+  "author": "EMR Bilişim",
+  "description": "EMR POS desktop app"
 }
