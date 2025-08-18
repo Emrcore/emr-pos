@@ -1,0 +1,29 @@
+# Node/Electron
+node_modules/
+dist/
+out/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-store/
+.DS_Store
+.vscode/
+.idea/
+coverage/
+*.local
+# Vite
+apps/*/node_modules/
+apps/*/dist/
+apps/*/.vite/
+# OS temp
+Thumbs.db
+
+# Build çıktıları
+*.asar
+*.exe
+*.dmg
+*.AppImage
+
+# Çevresel
+.env
