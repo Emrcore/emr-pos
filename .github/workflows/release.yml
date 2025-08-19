@@ -6,10 +6,12 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-win:
     runs-on: windows-latest
-
     defaults:
       run:
         working-directory: apps/desktop
@@ -32,6 +34,7 @@ jobs:
           mkdir -p electron
           [ -f electron/ip-config.json ] || echo '{}' > electron/ip-config.json
 
+      # İstersen kaldırabilirsin; electron-builder 'install-app-deps' de yeterli olur.
       - name: Rebuild native modules
         run: npx electron-rebuild -f -w better-sqlite3
 
