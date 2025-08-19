@@ -1,6 +1,7 @@
+// electron/main.js  (ESM)
 import { app, BrowserWindow, ipcMain } from "electron";
-import path from "path";
-import { fileURLToPath } from "url";
+import path, { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { openDb } from "../shared-db/db.js";
 import * as productsRepo from "../shared-db/repositories/productsRepo.js";
 import * as salesRepo from "../shared-db/repositories/salesRepo.js";
@@ -8,29 +9,35 @@ import * as settingsRepo from "../shared-db/repositories/settingsRepo.js";
 import * as reports from "../shared-db/repositories/reportsRepo.js";
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname = dirname(__filename);
 
 let win, db;
+const isDev = !!process.env.VITE_DEV_SERVER_URL;
 
 function createWindow() {
   win = new BrowserWindow({
     width: 1280,
     height: 800,
     webPreferences: {
-      preload: path.join(__dirname, "preload.cjs"),
+      preload: join(__dirname, "preload.cjs"), // CJS preload
       contextIsolation: true,
-      nodeIntegration: false
-    }
+      nodeIntegration: false,
+      sandbox: false,
+    },
   });
 
-  if (process.env.VITE_DEV_SERVER_URL) {
+  if (isDev) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL);
     win.webContents.openDevTools({ mode: "bottom" });
   } else {
-    win.loadFile(path.join(__dirname, "../index.html"));
+    // __dirname => app.asar/electron  → köke çıkıp dist/index.html’i yükle
+    const appAsarRoot = dirname(__dirname);           // app.asar
+    const indexProd = join(appAsarRoot, "dist", "index.html");
+    win.loadFile(indexProd);
   }
 }
 
+/** ---------- APP LIFECYCLE ---------- */
 app.whenReady().then(() => {
   const appDataDir = path.join(app.getPath("appData"), "emr-pos");
   db = openDb(appDataDir);
@@ -66,9 +73,12 @@ ipcMain.handle("print:receipt", async (e, data) => {
 });
 
 function buildReceiptHTML(data) {
-  const items = (data.items || []).map(
-    i => `<tr><td>${i.name}</td><td style="text-align:right">${i.qty}</td><td style="text-align:right">${i.unit}</td><td style="text-align:right">${i.total}</td></tr>`
-  ).join("");
+  const items = (data.items || [])
+    .map(
+      (i) =>
+        `<tr><td>${i.name}</td><td style="text-align:right">${i.qty}</td><td style="text-align:right">${i.unit}</td><td style="text-align:right">${i.total}</td></tr>`
+    )
+    .join("");
   return `
   <html><head><meta charset="utf-8">
   <style>
