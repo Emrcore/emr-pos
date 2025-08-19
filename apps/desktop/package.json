@@ -43,8 +43,7 @@
       "electron/**/*",
       "shared-db/**/*",
       "dist/**/*",
-      "package.json",
-      "index.html"
+      "package.json"
     ],
     "extraResources": [
       {
