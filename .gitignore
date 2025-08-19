@@ -27,3 +27,8 @@ Thumbs.db
 
 # Çevresel
 .env
+
+# build outputs
+apps/desktop/release/
+apps/desktop/dist/
+apps/desktop/linux-unpacked/
