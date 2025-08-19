@@ -34,10 +34,13 @@ jobs:
           mkdir -p electron
           [ -f electron/ip-config.json ] || echo '{}' > electron/ip-config.json
 
+<<<<<<< HEAD
       # İstersen kaldırabilirsin; electron-builder 'install-app-deps' de yeterli olur.
       - name: Rebuild native modules
         run: npx electron-rebuild -f -w better-sqlite3
 
+=======
+>>>>>>> ac24ce1 (ci: clean workflow (no PAT), use GITHUB_TOKEN; add ensure ip-config.json)
       - name: Build & Publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
