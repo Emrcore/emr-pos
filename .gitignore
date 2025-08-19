@@ -32,3 +32,6 @@ Thumbs.db
 apps/desktop/release/
 apps/desktop/dist/
 apps/desktop/linux-unpacked/
+apps/desktop/node_modules/
+apps/desktop/release/
+apps/desktop/dist/
