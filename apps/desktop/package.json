@@ -1,7 +1,7 @@
 {
   "name": "emr-pos-desktop",
   "private": true,
-  "version": "0.1.11",
+  "version": "0.1.13",
   "main": "electron/main.js",
   "scripts": {
     "dev": "concurrently -k -n VITE,ELECTRON \"vite --host 0.0.0.0\" \"cross-env VITE_DEV_SERVER_URL=http://185.149.103.223:5173 xvfb-run -a electron --no-sandbox --disable-gpu .\"",
