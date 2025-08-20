@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # tag bilgisi gelsin
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -38,10 +38,9 @@ jobs:
 
       - name: Build & Publish (GitHub Release)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # electron-builder bunu bekler
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx electron-builder --win --publish always
 
-      # Yayın yine de olmazsa exe’yi en azından artifact olarak alalım
       - name: Upload EXE as Actions artifact (fallback)
         if: always()
         uses: actions/upload-artifact@v4
