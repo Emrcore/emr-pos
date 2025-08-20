@@ -18,6 +18,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # tag bilgisi gelsin
 
       - uses: actions/setup-node@v4
         with:
@@ -25,7 +27,7 @@ jobs:
           cache: 'npm'
           cache-dependency-path: apps/desktop/package-lock.json
 
-      - name: Install
+      - name: Install deps (ci)
         run: npm ci
 
       - name: Ensure ip-config.json exists
@@ -36,5 +38,14 @@ jobs:
 
       - name: Build & Publish (GitHub Release)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # electron-builder bunu bekler
         run: npx electron-builder --win --publish always
+
+      # Yayın yine de olmazsa exe’yi en azından artifact olarak alalım
+      - name: Upload EXE as Actions artifact (fallback)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emr-pos-windows-installer
+          path: apps/desktop/release/*.exe
+          if-no-files-found: ignore
