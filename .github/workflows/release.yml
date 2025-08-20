@@ -18,13 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0   # tag bilgisi için
 
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # ---- WORKAROUND: rollup optional dep bug (npm#4828)
+      # NPM optional dependency (rollup native) bug'ı için kilit dosyasını CI'da kaldır
       - name: Remove lockfile (CI-only workaround)
         run: |
           if exist package-lock.json del package-lock.json
@@ -50,6 +50,7 @@ jobs:
         shell: bash
         run: ls -lah release || true
 
+      # Eğer Release yüklenmezse, en azından Actions Artifacts olarak .exe gelsin
       - name: Upload EXE as Actions artifact (fallback)
         if: always()
         uses: actions/upload-artifact@v4
