@@ -36,17 +36,14 @@ jobs:
           mkdir -p electron
           [ -f electron/ip-config.json ] || echo '{}' > electron/ip-config.json
 
-      # ÖNEMLİ: Renderer'ı üret
       - name: Build renderer
         run: npm run build:renderer
 
-      # EXE üret + GitHub Release'e yükle
       - name: Build & Publish (GitHub Release)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx electron-builder --win --publish always
 
-      # Tanı & fallback: release klasörünü listele ve artifact yükle
       - name: List release folder
         shell: bash
         run: ls -lah release || true
