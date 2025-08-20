@@ -2,7 +2,8 @@ name: Build & Release (Windows)
 
 on:
   push:
-    tags: ['v*']
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -16,18 +17,22 @@ jobs:
         working-directory: apps/desktop
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # tag bilgisi için
+          fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: apps/desktop/package-lock.json
 
       # NPM optional dependency (rollup native) bug'ı için kilit dosyasını CI'da kaldır
       - name: Remove lockfile (CI-only workaround)
-        run: |
-          if exist package-lock.json del package-lock.json
+        shell: bash
+        run: rm -f package-lock.json
 
       - name: Install deps
         run: npm install
@@ -41,20 +46,16 @@ jobs:
       - name: Build renderer
         run: npm run build:renderer
 
-      - name: Build & Publish (GitHub Release)
+      - name: Package & Publish (electron-builder)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # electron-builder'ın GitHub'a publish etmesi için
         run: npx electron-builder --win --publish always
 
-      - name: List release folder
-        shell: bash
-        run: ls -lah release || true
-
-      # Eğer Release yüklenmezse, en azından Actions Artifacts olarak .exe gelsin
-      - name: Upload EXE as Actions artifact (fallback)
+      # Yayın oluşmasa bile derlenen .exe'yi iş çıktısı olarak yükle
+      - name: Upload EXE artifact (fallback)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: emr-pos-windows-installer
-          path: apps/desktop/release/*.exe
+          name: emr-pos-windows-exe
+          path: release/*.exe
           if-no-files-found: warn
