@@ -22,14 +22,38 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Node
+      # Lockfile var mı tespit et
+      - name: Detect lockfile
+        id: lock
+        shell: bash
+        run: |
+          if [ -f apps/desktop/package-lock.json ]; then
+            echo "path=apps/desktop/package-lock.json" >> "$GITHUB_OUTPUT"
+          elif [ -f apps/desktop/npm-shrinkwrap.json ]; then
+            echo "path=apps/desktop/npm-shrinkwrap.json" >> "$GITHUB_OUTPUT"
+          elif [ -f apps/desktop/yarn.lock ]; then
+            echo "path=apps/desktop/yarn.lock" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Lockfile VARSA cache'li setup-node
+      - name: Setup Node (cached)
+        if: steps.lock.outputs.path != ''
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: apps/desktop/package-lock.json
+          cache-dependency-path: ${{ steps.lock.outputs.path }}
 
-      # Kilit dosyası varsa npm ci ile, yoksa npm install; ci başarısız olursa install'a düş
+      # Lockfile YOKSA cache'siz setup-node
+      - name: Setup Node
+        if: steps.lock.outputs.path == ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Kurulum: lockfile varsa npm ci, yoksa npm install
       - name: Install deps
         shell: bash
         run: |
@@ -53,7 +77,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx electron-builder --win --publish always
 
-      # Yayın oluşmasa bile derlenen .exe’yi artefact olarak yükle (farklı klasör adlarını kapsa)
       - name: Upload EXE artifact (fallback)
         if: always()
         uses: actions/upload-artifact@v4
