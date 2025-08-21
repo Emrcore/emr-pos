@@ -53,10 +53,9 @@
       }
     ],
     "win": {
-    "target": ["nsis"],
-    "signAndEditExecutable": false,   // rcedit yok -> Wine gerekmez
-    "forceCodeSigning": false         // imza zorunlu değil
-      }
+      "target": ["nsis"],
+      "signAndEditExecutable": false,
+      "forceCodeSigning": false
     },
     "nsis": {
       "oneClick": true,
