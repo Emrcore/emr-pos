@@ -1,19 +1,15 @@
-// electron/main.cjs
+// apps/desktop/electron/main.cjs
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const path = require("path");
 const { pathToFileURL } = require("url");
 
-async function importESM(filePath) {
-  const url = pathToFileURL(filePath).href;
-  return import(url);
-}
+async function importESM(filePath) { return import(pathToFileURL(filePath).href); }
 
 let dbApi = null;
 async function loadDbApi() {
-  const idx = path.join(__dirname, "../shared-db/index.cjs");
   try {
-    dbApi = await importESM(idx);
-    return;
+    // ESM wrapper (varsa)
+    dbApi = await importESM(path.join(__dirname, "../shared-db/index.cjs"));
   } catch {
     const openDbMod    = await importESM(path.join(__dirname, "../shared-db/db.js"));
     const productsRepo = await importESM(path.join(__dirname, "../shared-db/repositories/productsRepo.js"));
@@ -31,58 +27,49 @@ async function loadDbApi() {
 }
 
 let win, db;
-
 function createWindow() {
   win = new BrowserWindow({
     width: 1280,
     height: 800,
     show: false,
-    center: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
-      nodeIntegration: false
-    }
+      nodeIntegration: false,
+    },
   });
-
-  win.once("ready-to-show", () => { try { win.show(); win.focus(); } catch (_) {} });
+  win.once("ready-to-show", () => { win.show(); win.focus(); });
 
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
-    // 👉 prod'da dist/index.html'i yükle
-    win.loadFile(path.join(__dirname, "../dist/index.html"));
+    win.loadFile(path.join(__dirname, "../index.html"));
   }
 }
 
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) {
-  app.quit();
-} else {
-  app.on("second-instance", () => {
-    if (win) {
-      if (win.isMinimized()) win.restore();
-      win.show(); win.focus();
-    }
-  });
+app.whenReady().then(async () => {
+  try {
+    await loadDbApi();
 
-  app.whenReady().then(async () => {
-    try {
-      await loadDbApi();
-      // DB'yi her zaman userData altına kur
-      const dataDir = app.getPath("userData");
-      db = dbApi.openDb(dataDir);
-      createWindow();
-    } catch (err) {
-      console.error("Başlatma Hatası:", err);
-      dialog.showErrorBox("Başlatma Hatası", String(err?.stack || err));
-      app.quit();
-    }
-  });
-}
+    // **Kritik**: userData yolunu kullan (örn. C:\Users\...\AppData\Roaming\EMR POS)
+    const userDataDir = app.getPath("userData");
+
+    db = dbApi.openDb(userDataDir);  // db.js klasörleri kendisi oluşturuyor
+
+    createWindow();
+  } catch (err) {
+    const msg = (err && err.stack) ? err.stack : String(err);
+    console.error("Başlatma Hatası:\n", msg);
+    dialog.showErrorBox("Başlatma Hatası", msg);
+    app.quit();
+  }
+});
 
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
 app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+
+// IPC'ler (değişmedi) …
+
 
 // ---------- IPC ----------
 ipcMain.handle("db:products:list", () => dbApi.productsRepo.list(db));
