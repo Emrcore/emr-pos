@@ -1,5 +1,5 @@
 // apps/desktop/shared-db/db.js
-import Database from "better-sqlite3";
+const Database = require('better-sqlite3');
 import { createSchema } from "./schema.js";
 import path from "path";
 import fs from "fs";
