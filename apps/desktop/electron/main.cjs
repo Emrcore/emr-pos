@@ -2,16 +2,10 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 
-// CJS wrapper
-const { openDb } = require("../shared-db/index.cjs");
-
-// Repositories (CJS olduklarından emin olun)
-const productsRepo = require("../shared-db/repositories/productsRepo.cjs");
-const salesRepo    = require("../shared-db/repositories/salesRepo.cjs");
-const settingsRepo = require("../shared-db/repositories/settingsRepo.cjs");
-const reports      = require("../shared-db/repositories/reportsRepo.cjs");
-
-let win, db;
+let win;
+let db;                 // better-sqlite3 handle
+let openDb;             // ESM'den gelecek fonksiyon
+const modCache = {};    // ESM modüllerini bir kez yükleyip cache’leyelim
 
 function createWindow() {
   win = new BrowserWindow({
@@ -28,39 +22,71 @@ function createWindow() {
     win.loadURL(process.env.VITE_DEV_SERVER_URL);
     win.webContents.openDevTools({ mode: "bottom" });
   } else {
-    // renderer build çıktısı
-    win.loadFile(path.join(__dirname, "../dist/index.html"));
+    win.loadFile(path.join(__dirname, "../index.html"));
   }
 }
 
-app.whenReady().then(() => {
-  // openDb() argümansız çağrılırsa userData altında emr-pos.sqlite yaratır
-  db = openDb();
+// ESM modülünü CJS içinden güvenli yükleme (dinamik import)
+async function use(modulePath) {
+  if (!modCache[modulePath]) {
+    modCache[modulePath] = import(modulePath);
+  }
+  return modCache[modulePath];
+}
+
+app.whenReady().then(async () => {
+  // shared-db/db.js ESM -> dinamik import ile al
+  const dbMod = await use("../shared-db/db.js");
+  openDb = dbMod.openDb; // named export bekleniyor
+
+  const appDataDir = path.join(app.getPath("appData"), "emr-pos");
+  db = openDb(appDataDir);
+
   createWindow();
 });
 
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
+app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+
+// ---------------- IPC ----------------
+// Ürünler
+ipcMain.handle("db:products:list", async () => {
+  const m = await use("../shared-db/repositories/productsRepo.js"); // ESM
+  return m.list(db);
 });
-app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+ipcMain.handle("db:products:findByBarcode", async (_e, barcode) => {
+  const m = await use("../shared-db/repositories/productsRepo.js");
+  return m.findByBarcode(db, barcode);
+});
+ipcMain.handle("db:products:insert", async (_e, product) => {
+  const m = await use("../shared-db/repositories/productsRepo.js");
+  return m.insert(db, product);
 });
 
-/* ---------------- IPC ---------------- */
+// Satış
+ipcMain.handle("db:sales:create", async (_e, payload) => {
+  const m = await use("../shared-db/repositories/salesRepo.js");
+  return m.create(db, payload);
+});
 
-ipcMain.handle("db:products:list", () => productsRepo.list(db));
-ipcMain.handle("db:products:findByBarcode", (_e, barcode) => productsRepo.findByBarcode(db, barcode));
-ipcMain.handle("db:products:insert", (_e, product) => productsRepo.insert(db, product));
+// Ayarlar
+ipcMain.handle("db:settings:get", async (_e, key) => {
+  const m = await use("../shared-db/repositories/settingsRepo.js");
+  return m.get(db, key);
+});
+ipcMain.handle("db:settings:set", async (_e, { key, value }) => {
+  const m = await use("../shared-db/repositories/settingsRepo.js");
+  return m.set(db, key, value);
+});
 
-ipcMain.handle("db:sales:create", (_e, payload) => salesRepo.create(db, payload));
+// Raporlar
+ipcMain.handle("report:summary", async (_e, { start, end }) => {
+  const m = await use("../shared-db/repositories/reportsRepo.js");
+  return m.getSummary(db, start, end);
+});
 
-ipcMain.handle("db:settings:get", (_e, key) => settingsRepo.get(db, key));
-ipcMain.handle("db:settings:set", (_e, { key, value }) => settingsRepo.set(db, key, value));
-
-ipcMain.handle("report:summary", (_e, { start, end }) => reports.getSummary(db, start, end));
-
-ipcMain.handle("system:getPrinters", () => (win ? win.webContents.getPrinters() : []));
-
+// Yazdırma
+ipcMain.handle("system:getPrinters", () => win.webContents.getPrinters());
 ipcMain.handle("print:receipt", async (_e, data) => {
   const p = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
   const html = buildReceiptHTML(data);
@@ -70,20 +96,9 @@ ipcMain.handle("print:receipt", async (_e, data) => {
 });
 
 function buildReceiptHTML(data) {
-  const esc = (s = "") => String(s).replace(/[&<>"']/g, m =>
-    ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[m])
-  );
-
-  const items = (data.items || [])
-    .map(i => `
-      <tr>
-        <td>${esc(i.name)}</td>
-        <td style="text-align:right">${esc(i.qty)}</td>
-        <td style="text-align:right">${esc(i.unit)}</td>
-        <td style="text-align:right">${esc(i.total)}</td>
-      </tr>`)
-    .join("");
-
+  const items = (data.items || []).map(
+    i => `<tr><td>${i.name}</td><td style="text-align:right">${i.qty}</td><td style="text-align:right">${i.unit}</td><td style="text-align:right">${i.total}</td></tr>`
+  ).join("");
   return `
   <html><head><meta charset="utf-8">
   <style>
@@ -94,16 +109,16 @@ function buildReceiptHTML(data) {
     hr { border: 0; border-top: 1px dashed #333; margin: 6px 0; }
   </style></head>
   <body>
-    <h3>${esc(data.header?.title || "EMR POS")}</h3>
-    <h4>${esc(data.header?.date || "")}</h4>
+    <h3>${data.header?.title || "EMR POS"}</h3>
+    <h4>${data.header?.date || ""}</h4>
     <table>${items}</table>
     <hr/>
     <table>
-      <tr><td>Ara Toplam</td><td style="text-align:right">${esc(data.summary?.subtotal ?? "")}</td></tr>
-      <tr><td>KDV</td><td style="text-align:right">${esc(data.summary?.vat ?? "")}</td></tr>
-      <tr><td><b>TOPLAM</b></td><td style="text-align:right"><b>${esc(data.summary?.total ?? "")}</b></td></tr>
-      <tr><td>Ödeme</td><td style="text-align:right">${esc(data.summary?.payment ?? "")}</td></tr>
+      <tr><td>Ara Toplam</td><td style="text-align:right">${data.summary?.subtotal ?? ""}</td></tr>
+      <tr><td>KDV</td><td style="text-align:right">${data.summary?.vat ?? ""}</td></tr>
+      <tr><td><b>TOPLAM</b></td><td style="text-align:right"><b>${data.summary?.total ?? ""}</b></td></tr>
+      <tr><td>Ödeme</td><td style="text-align:right">${data.summary?.payment ?? ""}</td></tr>
     </table>
-    <p style="text-align:center">${esc(data.footer || "Teşekkür ederiz")}</p>
+    <p style="text-align:center">${data.footer || "Teşekkür ederiz"}</p>
   </body></html>`;
 }
