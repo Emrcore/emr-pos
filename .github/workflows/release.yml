@@ -26,7 +26,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          # Not: cache kapalı; lock yoksa hata veriyordu
+          # cache kapalı; lock yoksa hata veriyordu
 
       - name: Install dependencies (ci if lock exists, else install)
         shell: bash
@@ -53,13 +53,21 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx electron-builder --win --publish always
 
-      # Release oluşturulsa da oluşturulmasa da derlenen exe'yi artefakt olarak yükle
+      - name: List outputs (debug)
+        shell: bash
+        run: |
+          echo "Root tree:" && ls -lah ..
+          echo "Desktop tree:" && ls -lah .
+          echo "Release tree:" && ls -lah release || true
+          echo "Nested release tree:" && ls -lah release/* || true
+
+      # Release oluşsa da oluşmasa da derlenen exe'yi artefakt olarak yükle
       - name: Upload EXE artifact (fallback)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: emr-pos-windows-exe
           path: |
-            release/*.exe
-            release/*/*.exe
+            apps/desktop/release/*.exe
+            apps/desktop/release/*/*.exe
           if-no-files-found: warn
