@@ -1,52 +1,66 @@
-// apps/desktop/shared-db/db.js
-import fs from "fs";
-import path from "path";
-import os from "os";
+// ESM
+import fs from "node:fs";
+import path from "node:path";
 import Database from "better-sqlite3";
 
 /**
- * rootDir: Electron main'den app.getPath("userData") gelecek.
+ * Uygulamanýn yazýlabilir veri klasörünü kullanarak
+ * (örn. Windows: %AppData%/EMR POS) SQLite dosyasý açar.
+ * @param {string} baseDir app.getPath("userData") gibi bir klasör
  */
-export function openDb(rootDir) {
-  // rootDir gelmezse ev dizinine düþ
-  const baseDir = rootDir || path.join(os.homedir(), ".emr-pos");
+export function openDb(baseDir) {
   const dataDir = path.join(baseDir, "data");
+  fs.mkdirSync(dataDir, { recursive: true });
 
-  try {
-    // Klasörleri garanti et
-    fs.mkdirSync(dataDir, { recursive: true });
+  const dbPath = path.join(dataDir, "emr-pos.sqlite");
+  const db = new Database(dbPath);
 
-    const dbPath = path.join(dataDir, "emr-pos.sqlite3");
+  // Saðlamlýk + performans
+  db.pragma("journal_mode = WAL");
+  db.pragma("foreign_keys = ON");
+  db.pragma("synchronous = NORMAL");
 
-    // Ek teþhis: yol eriþilebilir mi?
-    try {
-      fs.accessSync(dataDir, fs.constants.R_OK | fs.constants.W_OK);
-    } catch (e) {
-      throw new Error(
-        `Veri klasörüne eriþilemiyor: ${dataDir}\n` +
-        `Ýzin/Hata: ${e?.message || e}`
-      );
-    }
+  // --- Þema ---
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS products (
+      id TEXT PRIMARY KEY,
+      barcode TEXT UNIQUE,
+      name TEXT NOT NULL,
+      price REAL NOT NULL,
+      stock REAL DEFAULT 0,
+      createdAt TEXT DEFAULT (datetime('now'))
+    )
+  `).run();
 
-    // DB'yi oluþtur/aç
-    const db = new Database(dbPath, {
-      fileMustExist: false,
-      timeout: 5000,
-    });
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )
+  `).run();
 
-    db.pragma("journal_mode = WAL");
-    db.pragma("synchronous = NORMAL");
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS sales (
+      id TEXT PRIMARY KEY,
+      total REAL NOT NULL,
+      payment TEXT,
+      createdAt TEXT DEFAULT (datetime('now'))
+    )
+  `).run();
 
-    return db;
-  } catch (err) {
-    // Burada ayrýntýlý mesaj verelim
-    const msg =
-      `SQLite açýlýþ hatasý: ${err?.message || err}\n` +
-      `baseDir: ${baseDir}\n` +
-      `dataDir: ${dataDir}\n`;
-    // Üst katmana fýrlat
-    throw new Error(msg);
-  }
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS sale_items (
+      id TEXT PRIMARY KEY,
+      saleId TEXT NOT NULL,
+      productId TEXT,
+      name TEXT NOT NULL,
+      qty REAL NOT NULL,
+      unitPrice REAL NOT NULL,
+      total REAL NOT NULL,
+      FOREIGN KEY (saleId) REFERENCES sales(id) ON DELETE CASCADE,
+      FOREIGN KEY (productId) REFERENCES products(id)
+    )
+  `).run();
+
+  return db;
 }
-
-export default { openDb };

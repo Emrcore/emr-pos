@@ -3,30 +3,36 @@ const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const path = require("path");
 const { pathToFileURL } = require("url");
 
-async function importESM(filePath) { return import(pathToFileURL(filePath).href); }
+// ESM modülleri (repo dosyaların .js ise ESM olabilir) dinamik import ile yükle
+async function importESM(filePath) {
+  return import(pathToFileURL(filePath).href);
+}
 
 let dbApi = null;
 async function loadDbApi() {
-  try {
-    // ESM wrapper (varsa)
-    dbApi = await importESM(path.join(__dirname, "../shared-db/index.cjs"));
-  } catch {
-    const openDbMod    = await importESM(path.join(__dirname, "../shared-db/db.js"));
-    const productsRepo = await importESM(path.join(__dirname, "../shared-db/repositories/productsRepo.js"));
-    const salesRepo    = await importESM(path.join(__dirname, "../shared-db/repositories/salesRepo.js"));
-    const settingsRepo = await importESM(path.join(__dirname, "../shared-db/repositories/settingsRepo.js"));
-    const reports      = await importESM(path.join(__dirname, "../shared-db/repositories/reportsRepo.js"));
-    dbApi = {
-      openDb: openDbMod.openDb || openDbMod.default || openDbMod,
-      productsRepo: productsRepo.default || productsRepo,
-      salesRepo: salesRepo.default || salesRepo,
-      settingsRepo: settingsRepo.default || settingsRepo,
-      reports: reports.default || reports
-    };
-  }
+  // Önce CJS db.js’i doğrudan require et (tercihen)
+  const { openDb } = require("../shared-db/db.js");
+
+  // Repos ESM ise dinamik import; CJS ise require deneyelim
+  let productsRepo, salesRepo, settingsRepo, reports;
+
+  try { productsRepo = require("../shared-db/repositories/productsRepo.js"); }
+  catch { productsRepo = (await importESM(path.join(__dirname, "../shared-db/repositories/productsRepo.js"))).default; }
+
+  try { salesRepo = require("../shared-db/repositories/salesRepo.js"); }
+  catch { salesRepo = (await importESM(path.join(__dirname, "../shared-db/repositories/salesRepo.js"))).default; }
+
+  try { settingsRepo = require("../shared-db/repositories/settingsRepo.js"); }
+  catch { settingsRepo = (await importESM(path.join(__dirname, "../shared-db/repositories/settingsRepo.js"))).default; }
+
+  try { reports = require("../shared-db/repositories/reportsRepo.js"); }
+  catch { reports = (await importESM(path.join(__dirname, "../shared-db/repositories/reportsRepo.js"))).default; }
+
+  dbApi = { openDb, productsRepo, salesRepo, settingsRepo, reports };
 }
 
 let win, db;
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1280,
@@ -35,9 +41,10 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
-      nodeIntegration: false,
-    },
+      nodeIntegration: false
+    }
   });
+
   win.once("ready-to-show", () => { win.show(); win.focus(); });
 
   if (process.env.VITE_DEV_SERVER_URL) {
@@ -51,25 +58,20 @@ app.whenReady().then(async () => {
   try {
     await loadDbApi();
 
-    // **Kritik**: userData yolunu kullan (örn. C:\Users\...\AppData\Roaming\EMR POS)
+    // userData (Windows: C:\Users\<kullanıcı>\AppData\Roaming\EMR POS)
     const userDataDir = app.getPath("userData");
-
-    db = dbApi.openDb(userDataDir);  // db.js klasörleri kendisi oluşturuyor
+    db = dbApi.openDb(userDataDir);
 
     createWindow();
   } catch (err) {
-    const msg = (err && err.stack) ? err.stack : String(err);
-    console.error("Başlatma Hatası:\n", msg);
-    dialog.showErrorBox("Başlatma Hatası", msg);
+    console.error("Başlatma Hatası:", err);
+    dialog.showErrorBox("Başlatma Hatası", `SqliteError: ${err && err.message ? err.message : String(err)}`);
     app.quit();
   }
 });
 
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
 app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
-
-// IPC'ler (değişmedi) …
-
 
 // ---------- IPC ----------
 ipcMain.handle("db:products:list", () => dbApi.productsRepo.list(db));
