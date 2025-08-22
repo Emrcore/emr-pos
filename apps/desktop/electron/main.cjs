@@ -1,33 +1,47 @@
+// electron/main.cjs
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
-const fs = require("node:fs");
-const path = require("node:path");
+const path = require("path");
+const fs = require("fs");
 const { pathToFileURL } = require("url");
 
-function logLine(line) {
-  try {
-    const logDir = path.join(app.getPath("userData"), "logs");
-    fs.mkdirSync(logDir, { recursive: true });
-    fs.appendFileSync(path.join(logDir, "startup.log"), new Date().toISOString() + " " + line + "\n");
-  } catch {}
+function toFileUrl(p) { return pathToFileURL(p).href; }
+
+async function importESM(absPath) {
+  return import(toFileUrl(absPath));
 }
 
-async function importESM(filePath) {
-  const url = pathToFileURL(filePath).href;
-  return import(url);
+function resolveFromAppRoot(...segments) {
+  // app.getAppPath() => ...\resources\app.asar  (veya dev’de proje kökü)
+  const appRoot = app.getAppPath();
+  return path.join(appRoot, ...segments);
 }
 
 let dbApi = null;
 async function loadDbApi() {
-  const idx = path.join(__dirname, "../shared-db/index.cjs");
-  try {
+  // 1) Önce tek giriş noktası (index.cjs) varsa onu yükle
+  const idx = resolveFromAppRoot("shared-db", "index.cjs");
+  if (fs.existsSync(idx)) {
     dbApi = await importESM(idx);
     return;
-  } catch {}
-  const openDbMod    = await importESM(path.join(__dirname, "../shared-db/db.js"));
-  const productsRepo = await importESM(path.join(__dirname, "../shared-db/repositories/productsRepo.js"));
-  const salesRepo    = await importESM(path.join(__dirname, "../shared-db/repositories/salesRepo.js"));
-  const settingsRepo = await importESM(path.join(__dirname, "../shared-db/repositories/settingsRepo.js"));
-  const reports      = await importESM(path.join(__dirname, "../shared-db/repositories/reportsRepo.js"));
+  }
+  // 2) Tek tek modülleri yükle (pakete girmişse)
+  const dbJs          = resolveFromAppRoot("shared-db", "db.js");
+  const productsJs    = resolveFromAppRoot("shared-db", "repositories", "productsRepo.js");
+  const salesJs       = resolveFromAppRoot("shared-db", "repositories", "salesRepo.js");
+  const settingsJs    = resolveFromAppRoot("shared-db", "repositories", "settingsRepo.js");
+  const reportsJs     = resolveFromAppRoot("shared-db", "repositories", "reportsRepo.js");
+
+  // Yoksa net hata göster
+  const missing = [dbJs, productsJs, salesJs, settingsJs, reportsJs].filter(p => !fs.existsSync(p));
+  if (missing.length) {
+    throw new Error("shared-db paketlenmemiş. Eksik dosyalar:\n" + missing.join("\n"));
+  }
+
+  const openDbMod    = await importESM(dbJs);
+  const productsRepo = await importESM(productsJs);
+  const salesRepo    = await importESM(salesJs);
+  const settingsRepo = await importESM(settingsJs);
+  const reports      = await importESM(reportsJs);
   dbApi = {
     openDb: openDbMod.openDb || openDbMod.default || openDbMod,
     productsRepo: productsRepo.default || productsRepo,
@@ -55,7 +69,8 @@ function createWindow() {
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
-    win.loadFile(path.join(__dirname, "../index.html"));
+    // prod: dist/index.html (asar içinde)
+    win.loadFile(resolveFromAppRoot("dist", "index.html"));
   }
 }
 
@@ -63,22 +78,18 @@ app.whenReady().then(async () => {
   try {
     await loadDbApi();
 
-    const userData = app.getPath("userData");
-    const override = process.env.EMR_POS_DATA_DIR || "";
-    logLine("userData=" + userData);
-    if (override) logLine("override=" + override);
+    // DB dizini: userData (Windows: %APPDATA%\EMR POS)
+    const dataDir = app.getPath("userData");
+    fs.mkdirSync(path.join(dataDir, "data"), { recursive: true }); // garanti olsun
 
-    db = dbApi.openDb(override || userData);
-    logLine("DB open OK");
-
+    db = dbApi.openDb(dataDir); // shared-db/db.js bunu kullanıyor olmalı
     createWindow();
   } catch (err) {
-    logLine("DB open FAIL: " + (err && err.stack ? err.stack : err));
+    console.error(err);
     dialog.showErrorBox("Başlatma Hatası", String(err?.stack || err));
     app.quit();
   }
 });
-
 
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
 app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
@@ -132,5 +143,5 @@ function buildReceiptHTML(data) {
   </body></html>`;
 }
 
-process.on("unhandledRejection", (r) => { console.error(r); });
-process.on("uncaughtException", (e) => { console.error(e); });
+process.on("unhandledRejection", e => console.error(e));
+process.on("uncaughtException", e => console.error(e));

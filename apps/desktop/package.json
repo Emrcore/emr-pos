@@ -38,18 +38,15 @@
     "artifactName": "EMR-POS-${version}-Setup.${ext}",
     "asar": true,
     "asarUnpack": [
-      "electron/preload.js"
+      "**/*.node"               // better-sqlite3 .node dosyaları unpack
     ],
     "files": [
       "electron/**/*",
+      "shared-db/**/*",
       "dist/**/*",
       "package.json"
     ],
     "extraResources": [
-      {
-        "from": "shared-db/",
-        "to": "shared-db"
-      },
       {
         "from": "electron/ip-config.json",
         "to": "electron/ip-config.json"
