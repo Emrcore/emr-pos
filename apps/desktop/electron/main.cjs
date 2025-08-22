@@ -1,135 +1,103 @@
-// apps/desktop/electron/main.cjs
-const { app, BrowserWindow, ipcMain, screen } = require("electron");
+// electron/main.cjs
+const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const path = require("path");
+const { pathToFileURL } = require("url");
 
-// Görünürlük/gpu problemlerine karşı bayraklar
-process.env.ELECTRON_ENABLE_LOGGING = "1";
-process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = "true";
-app.disableHardwareAcceleration();
-app.commandLine.appendSwitch("disable-gpu");
-app.commandLine.appendSwitch("disable-gpu-compositing");
-app.commandLine.appendSwitch("in-process-gpu");
-// Bazı Windows makinelerinde occlusion algısı yüzünden render gecikebilir:
-app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
-
-// Tek instance
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) app.quit();
-else app.on("second-instance", () => {
-  const w = global.mainWindow;
-  if (!w) return;
-  if (w.isMinimized()) w.restore();
-  w.setSkipTaskbar(false);
-  w.show(); w.focus(); w.moveTop();
-});
-
-let db, repos = {};
-async function loadRepos() {
-  const base = path.join(__dirname, "..", "shared-db");
-  const { openDb } = await import(path.join(base, "db.js")); // ESM dinamik
-  repos.products = await import(path.join(base, "repositories", "productsRepo.js"));
-  repos.sales    = await import(path.join(base, "repositories", "salesRepo.js"));
-  repos.settings = await import(path.join(base, "repositories", "settingsRepo.js"));
-  repos.reports  = await import(path.join(base, "repositories", "reportsRepo.js"));
-  const appDataDir = path.join(app.getPath("appData"), "emr-pos");
-  db = openDb(appDataDir);
+// ---- ESM modülleri (shared-db) güvenli import helper'ı
+async function importESM(filePath) {
+  // Windows'ta C:\... gibi yolları file:// URL'ye çevir
+  const url = pathToFileURL(filePath).href;
+  return import(url);
 }
 
-function clampToScreen(bounds) {
+// paylaşılan DB API'lerini dinamik yükle (ESM)
+let dbApi = null;
+async function loadDbApi() {
+  // ihtiyacınıza göre: tek bir index.cjs kullanıyorsanız onu import edin
+  // yoksa tek tek modülleri import edip bir araya getirin.
+  //
+  // 1) TERCİH: apps/desktop/shared-db/index.cjs varsa:
+  const idx = path.join(__dirname, "../shared-db/index.cjs");
   try {
-    const { workArea } = screen.getPrimaryDisplay();
-    const width  = Math.min(Math.max(bounds.width  || 1280, 800), workArea.width);
-    const height = Math.min(Math.max(bounds.height ||  800, 600), workArea.height);
-    const x = Math.max(workArea.x, Math.min((bounds.x ?? 100), workArea.x + workArea.width  - width));
-    const y = Math.max(workArea.y, Math.min((bounds.y ?? 100), workArea.y + workArea.height - height));
-    return { x, y, width, height };
-  } catch { return { x: 100, y: 100, width: 1280, height: 800 }; }
+    dbApi = await importESM(idx);
+    // dbApi: { openDb, productsRepo, salesRepo, settingsRepo, reports }
+    return;
+  } catch (_) {
+    // 2) Alternatif: tek tek dosyalar (Eğer index.cjs yoksa)
+    const openDbMod     = await importESM(path.join(__dirname, "../shared-db/db.js"));
+    const productsRepo  = await importESM(path.join(__dirname, "../shared-db/repositories/productsRepo.js"));
+    const salesRepo     = await importESM(path.join(__dirname, "../shared-db/repositories/salesRepo.js"));
+    const settingsRepo  = await importESM(path.join(__dirname, "../shared-db/repositories/settingsRepo.js"));
+    const reports       = await importESM(path.join(__dirname, "../shared-db/repositories/reportsRepo.js"));
+
+    dbApi = {
+      openDb: openDbMod.openDb || openDbMod.default || openDbMod,
+      productsRepo: productsRepo.default || productsRepo,
+      salesRepo: salesRepo.default || salesRepo,
+      settingsRepo: settingsRepo.default || settingsRepo,
+      reports: reports.default || reports
+    };
+  }
 }
+
+let win;
+let db;
 
 function createWindow() {
-  const safe = clampToScreen({ width: 1280, height: 800 });
-
-  const win = new BrowserWindow({
-    ...safe,
-    show: false,                  // ready-to-show ile aç
-    autoHideMenuBar: true,
-    backgroundColor: "#ffffff",
-    useContentSize: true,
-    frame: true,
+  win = new BrowserWindow({
+    width: 1280,
+    height: 800,
+    show: false, // önce hazır olunca gösterelim
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
-      nodeIntegration: false,
-      backgroundThrottling: false,
-    },
-  });
-  global.mainWindow = win;
-
-  // Önce boş sayfa + görünürlük; sonra asıl sayfa yükle
-  win.loadURL("about:blank").finally(() => {
-    // DEV vs PROD yükleme
-    if (process.env.VITE_DEV_SERVER_URL) {
-      win.loadURL(process.env.VITE_DEV_SERVER_URL);
-    } else {
-      const indexHtml = path.join(__dirname, "..", "dist", "index.html"); // prod doğru yol
-      win.loadFile(indexHtml).catch(err => console.error("loadFile error:", err));
+      nodeIntegration: false
     }
   });
 
-  // Loglar – görünmeme nedenini yakalar
-  win.webContents.on("did-fail-load", (e, code, desc, url, isMainFrame) => {
-    console.error("did-fail-load", { code, desc, url, isMainFrame, urlTried: win.webContents.getURL() });
+  win.once("ready-to-show", () => {
+    win.show();
+    win.focus();
   });
-  win.webContents.on("render-process-gone", (e, details) => {
-    console.error("render-process-gone", details);
-  });
-  win.on("unresponsive", () => console.error("Window unresponsive"));
 
-  // Görünürlük garantisi
-  const forceShow = () => {
-    try {
-      if (win.isDestroyed()) return;
-      const s = clampToScreen(win.getBounds());
-      win.setBounds(s);
-      win.setSkipTaskbar(false);
-      win.setFocusable(true);
-      if (win.isMinimized()) win.restore();
-      win.show(); win.focus(); win.moveTop();
-
-      // kısa süre AlwaysOnTop aç/kapat — bazı makinelerde “ön plana getir”
-      win.setAlwaysOnTop(true, "screen-saver");
-      setTimeout(() => !win.isDestroyed() && win.setAlwaysOnTop(false), 300);
-    } catch (e) { console.error("forceShow error", e); }
-  };
-
-  win.once("ready-to-show", forceShow);
-  win.webContents.once("dom-ready", forceShow);
-  setTimeout(() => { if (!win.isVisible()) forceShow(); }, 3000);
-
-  return win;
+  if (process.env.VITE_DEV_SERVER_URL) {
+    win.loadURL(process.env.VITE_DEV_SERVER_URL);
+    // DevTools istersen aç
+    // win.webContents.openDevTools({ mode: "bottom" });
+  } else {
+    win.loadFile(path.join(__dirname, "../index.html"));
+  }
 }
 
 app.whenReady().then(async () => {
-  await loadRepos();
-  createWindow();
+  try {
+    await loadDbApi(); // ESM modülleri yüklemeden pencere yaratma
+    const appDataDir = path.join(app.getPath("appData"), "emr-pos");
+    db = dbApi.openDb(appDataDir);
+    createWindow();
+  } catch (err) {
+    console.error("DB API yüklenirken hata:", err);
+    dialog.showErrorBox("Başlatma Hatası", String(err?.stack || err));
+    app.quit();
+  }
 });
 
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
 app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 
 // ---------- IPC ----------
-ipcMain.handle("db:products:list", () => repos.products.list(db));
-ipcMain.handle("db:products:findByBarcode", (e, barcode) => repos.products.findByBarcode(db, barcode));
-ipcMain.handle("db:products:insert", (e, product) => repos.products.insert(db, product));
+ipcMain.handle("db:products:list", () => dbApi.productsRepo.list(db));
+ipcMain.handle("db:products:findByBarcode", (e, barcode) => dbApi.productsRepo.findByBarcode(db, barcode));
+ipcMain.handle("db:products:insert", (e, product) => dbApi.productsRepo.insert(db, product));
 
-ipcMain.handle("db:sales:create", (e, payload) => repos.sales.create(db, payload));
+ipcMain.handle("db:sales:create", (e, payload) => dbApi.salesRepo.create(db, payload));
 
-ipcMain.handle("db:settings:get", (e, key) => repos.settings.get(db, key));
-ipcMain.handle("db:settings:set", (e, { key, value }) => repos.settings.set(db, key, value));
+ipcMain.handle("db:settings:get", (e, key) => dbApi.settingsRepo.get(db, key));
+ipcMain.handle("db:settings:set", (e, { key, value }) => dbApi.settingsRepo.set(db, key, value));
 
-ipcMain.handle("report:summary", (e, { start, end }) => repos.reports.getSummary(db, start, end));
+ipcMain.handle("report:summary", (e, { start, end }) => dbApi.reports.getSummary(db, start, end));
 
-ipcMain.handle("system:getPrinters", () => global.mainWindow?.webContents.getPrinters());
+ipcMain.handle("system:getPrinters", () => win.webContents.getPrinters());
 ipcMain.handle("print:receipt", async (e, data) => {
   const p = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
   const html = buildReceiptHTML(data);
@@ -165,3 +133,13 @@ function buildReceiptHTML(data) {
     <p style="text-align:center">${data.footer || "Teşekkür ederiz"}</p>
   </body></html>`;
 }
+
+// ---- Global hata yakalama (arka planda kalma sorunlarını görünür yapar)
+process.on("unhandledRejection", (reason) => {
+  console.error("unhandledRejection:", reason);
+  dialog.showErrorBox("Beklenmeyen Hata", String(reason?.stack || reason));
+});
+process.on("uncaughtException", (err) => {
+  console.error("uncaughtException:", err);
+  dialog.showErrorBox("Beklenmeyen Hata", String(err?.stack || err));
+});
