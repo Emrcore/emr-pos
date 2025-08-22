@@ -1,26 +1,87 @@
 // ESM
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import Database from "better-sqlite3";
 
+function safeMkdir(p) {
+  fs.mkdirSync(p, { recursive: true });
+  // yazýlabilir mi?
+  const t = path.join(p, ".__writecheck");
+  fs.writeFileSync(t, "ok");
+  fs.unlinkSync(t);
+}
+
+function extendLongPathWin(p) {
+  // Windows uzun yol desteði (ihtiyaç olursa)
+  if (process.platform === "win32" && !p.startsWith("\\\\?\\")) {
+    if (p.length >= 240) return "\\\\?\\" + p;
+  }
+  return p;
+}
+
 /**
- * Uygulamanýn yazýlabilir veri klasörünü kullanarak
- * (örn. Windows: %AppData%/EMR POS) SQLite dosyasý açar.
- * @param {string} baseDir app.getPath("userData") gibi bir klasör
+ * baseDir = app.getPath('userData') gönderin.
+ * Bu fonksiyon data klasörünü oluþturur, yazýlabilirliði test eder,
+ * gerekirse LOCALAPPDATA/EMR POS gibi yedek bir köke düþer.
  */
 export function openDb(baseDir) {
-  const dataDir = path.join(baseDir, "data");
-  fs.mkdirSync(dataDir, { recursive: true });
+  const candidates = [];
 
-  const dbPath = path.join(dataDir, "emr-pos.sqlite");
+  // 1) Ýstemci override etmek isterse
+  if (process.env.EMR_POS_DATA_DIR) {
+    candidates.push(process.env.EMR_POS_DATA_DIR);
+  }
+
+  // 2) Normal yol
+  candidates.push(baseDir);
+
+  // 3) Yedek (Windows)
+  if (process.platform === "win32" && process.env.LOCALAPPDATA) {
+    candidates.push(path.join(process.env.LOCALAPPDATA, "EMR POS"));
+  }
+
+  // 4) Son çare: kullanýcý temp
+  candidates.push(path.join(os.tmpdir(), "emr-pos"));
+
+  let chosenBase = null;
+  let lastErr = null;
+
+  for (const cand of candidates) {
+    try {
+      safeMkdir(cand);
+      chosenBase = cand;
+      break;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  if (!chosenBase) {
+    throw new Error(
+      "Veri dizini oluþturulamadý. Son hata: " + (lastErr?.message || lastErr)
+    );
+  }
+
+  const dataDir = path.join(chosenBase, "data");
+  safeMkdir(dataDir);
+
+  const dbPath = extendLongPathWin(path.join(dataDir, "emr-pos.sqlite"));
+
+  // DB dosyasýný önceden dokundur (bazý antivirüsler/permission durumlarý için)
+  try {
+    const fd = fs.openSync(dbPath, "a");
+    fs.closeSync(fd);
+  } catch (e) {
+    // dokunma baþarýsýzsa devam etmek yerine net hata verelim
+    throw new Error("DB dosyasý oluþturulamadý: " + dbPath + " / " + e.message);
+  }
+
   const db = new Database(dbPath);
-
-  // Saðlamlýk + performans
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.pragma("synchronous = NORMAL");
 
-  // --- Þema ---
   db.prepare(`
     CREATE TABLE IF NOT EXISTS products (
       id TEXT PRIMARY KEY,
@@ -64,3 +125,5 @@ export function openDb(baseDir) {
 
   return db;
 }
+
+export default { openDb };

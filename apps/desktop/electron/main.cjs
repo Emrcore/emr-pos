@@ -1,34 +1,40 @@
-// apps/desktop/electron/main.cjs
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
-const path = require("path");
+const fs = require("node:fs");
+const path = require("node:path");
 const { pathToFileURL } = require("url");
 
-// ESM modülleri (repo dosyaların .js ise ESM olabilir) dinamik import ile yükle
+function logLine(line) {
+  try {
+    const logDir = path.join(app.getPath("userData"), "logs");
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.appendFileSync(path.join(logDir, "startup.log"), new Date().toISOString() + " " + line + "\n");
+  } catch {}
+}
+
 async function importESM(filePath) {
-  return import(pathToFileURL(filePath).href);
+  const url = pathToFileURL(filePath).href;
+  return import(url);
 }
 
 let dbApi = null;
 async function loadDbApi() {
-  // Önce CJS db.js’i doğrudan require et (tercihen)
-  const { openDb } = require("../shared-db/db.js");
-
-  // Repos ESM ise dinamik import; CJS ise require deneyelim
-  let productsRepo, salesRepo, settingsRepo, reports;
-
-  try { productsRepo = require("../shared-db/repositories/productsRepo.js"); }
-  catch { productsRepo = (await importESM(path.join(__dirname, "../shared-db/repositories/productsRepo.js"))).default; }
-
-  try { salesRepo = require("../shared-db/repositories/salesRepo.js"); }
-  catch { salesRepo = (await importESM(path.join(__dirname, "../shared-db/repositories/salesRepo.js"))).default; }
-
-  try { settingsRepo = require("../shared-db/repositories/settingsRepo.js"); }
-  catch { settingsRepo = (await importESM(path.join(__dirname, "../shared-db/repositories/settingsRepo.js"))).default; }
-
-  try { reports = require("../shared-db/repositories/reportsRepo.js"); }
-  catch { reports = (await importESM(path.join(__dirname, "../shared-db/repositories/reportsRepo.js"))).default; }
-
-  dbApi = { openDb, productsRepo, salesRepo, settingsRepo, reports };
+  const idx = path.join(__dirname, "../shared-db/index.cjs");
+  try {
+    dbApi = await importESM(idx);
+    return;
+  } catch {}
+  const openDbMod    = await importESM(path.join(__dirname, "../shared-db/db.js"));
+  const productsRepo = await importESM(path.join(__dirname, "../shared-db/repositories/productsRepo.js"));
+  const salesRepo    = await importESM(path.join(__dirname, "../shared-db/repositories/salesRepo.js"));
+  const settingsRepo = await importESM(path.join(__dirname, "../shared-db/repositories/settingsRepo.js"));
+  const reports      = await importESM(path.join(__dirname, "../shared-db/repositories/reportsRepo.js"));
+  dbApi = {
+    openDb: openDbMod.openDb || openDbMod.default || openDbMod,
+    productsRepo: productsRepo.default || productsRepo,
+    salesRepo: salesRepo.default || salesRepo,
+    settingsRepo: settingsRepo.default || settingsRepo,
+    reports: reports.default || reports
+  };
 }
 
 let win, db;
@@ -44,7 +50,6 @@ function createWindow() {
       nodeIntegration: false
     }
   });
-
   win.once("ready-to-show", () => { win.show(); win.focus(); });
 
   if (process.env.VITE_DEV_SERVER_URL) {
@@ -58,17 +63,22 @@ app.whenReady().then(async () => {
   try {
     await loadDbApi();
 
-    // userData (Windows: C:\Users\<kullanıcı>\AppData\Roaming\EMR POS)
-    const userDataDir = app.getPath("userData");
-    db = dbApi.openDb(userDataDir);
+    const userData = app.getPath("userData");
+    const override = process.env.EMR_POS_DATA_DIR || "";
+    logLine("userData=" + userData);
+    if (override) logLine("override=" + override);
+
+    db = dbApi.openDb(override || userData);
+    logLine("DB open OK");
 
     createWindow();
   } catch (err) {
-    console.error("Başlatma Hatası:", err);
-    dialog.showErrorBox("Başlatma Hatası", `SqliteError: ${err && err.message ? err.message : String(err)}`);
+    logLine("DB open FAIL: " + (err && err.stack ? err.stack : err));
+    dialog.showErrorBox("Başlatma Hatası", String(err?.stack || err));
     app.quit();
   }
 });
+
 
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
 app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
