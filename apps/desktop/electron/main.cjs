@@ -2,40 +2,35 @@
 const { app, BrowserWindow, ipcMain, screen } = require("electron");
 const path = require("path");
 
-// ---- LOGGING (Windows'ta konsola yaz)
+// Görünürlük/gpu problemlerine karşı bayraklar
 process.env.ELECTRON_ENABLE_LOGGING = "1";
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = "true";
-
-// ---- GPU'yu kapat (siyah ekran/boş pencere için)
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch("disable-gpu");
 app.commandLine.appendSwitch("disable-gpu-compositing");
-// Bazı makinelerde faydalı:
 app.commandLine.appendSwitch("in-process-gpu");
+// Bazı Windows makinelerinde occlusion algısı yüzünden render gecikebilir:
+app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 
-// ---- single-instance
+// Tek instance
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
-else {
-  app.on("second-instance", () => {
-    const w = global.mainWindow;
-    if (w) {
-      if (w.isMinimized()) w.restore();
-      w.show(); w.focus();
-    }
-  });
-}
+else app.on("second-instance", () => {
+  const w = global.mainWindow;
+  if (!w) return;
+  if (w.isMinimized()) w.restore();
+  w.setSkipTaskbar(false);
+  w.show(); w.focus(); w.moveTop();
+});
 
 let db, repos = {};
 async function loadRepos() {
-  // shared-db ESM ise dinamik import ile al
   const base = path.join(__dirname, "..", "shared-db");
-  const { openDb } = await import(path.join(base, "db.js"));
+  const { openDb } = await import(path.join(base, "db.js")); // ESM dinamik
   repos.products = await import(path.join(base, "repositories", "productsRepo.js"));
   repos.sales    = await import(path.join(base, "repositories", "salesRepo.js"));
   repos.settings = await import(path.join(base, "repositories", "settingsRepo.js"));
   repos.reports  = await import(path.join(base, "repositories", "reportsRepo.js"));
-
   const appDataDir = path.join(app.getPath("appData"), "emr-pos");
   db = openDb(appDataDir);
 }
@@ -43,11 +38,11 @@ async function loadRepos() {
 function clampToScreen(bounds) {
   try {
     const { workArea } = screen.getPrimaryDisplay();
-    const safeW = Math.min(Math.max(bounds.width || 1280, 800), workArea.width);
-    const safeH = Math.min(Math.max(bounds.height || 800, 600), workArea.height);
-    const x = Math.max(workArea.x, Math.min((bounds.x ?? 100), workArea.x + workArea.width  - safeW));
-    const y = Math.max(workArea.y, Math.min((bounds.y ?? 100), workArea.y + workArea.height - safeH));
-    return { x, y, width: safeW, height: safeH };
+    const width  = Math.min(Math.max(bounds.width  || 1280, 800), workArea.width);
+    const height = Math.min(Math.max(bounds.height ||  800, 600), workArea.height);
+    const x = Math.max(workArea.x, Math.min((bounds.x ?? 100), workArea.x + workArea.width  - width));
+    const y = Math.max(workArea.y, Math.min((bounds.y ?? 100), workArea.y + workArea.height - height));
+    return { x, y, width, height };
   } catch { return { x: 100, y: 100, width: 1280, height: 800 }; }
 }
 
@@ -70,56 +65,46 @@ function createWindow() {
   });
   global.mainWindow = win;
 
-  // Yükleme yolu (DEV vs PROD)
-  if (process.env.VITE_DEV_SERVER_URL) {
-    win.loadURL(process.env.VITE_DEV_SERVER_URL);
-    win.webContents.openDevTools({ mode: "bottom" });
-  } else {
-    // asar içinde çalışır: __dirname = app.asar/electron
-    const indexHtml = path.join(__dirname, "..", "dist", "index.html");
-    win.loadFile(indexHtml).catch(err => {
-      console.error("loadFile error:", err);
-    });
-  }
+  // Önce boş sayfa + görünürlük; sonra asıl sayfa yükle
+  win.loadURL("about:blank").finally(() => {
+    // DEV vs PROD yükleme
+    if (process.env.VITE_DEV_SERVER_URL) {
+      win.loadURL(process.env.VITE_DEV_SERVER_URL);
+    } else {
+      const indexHtml = path.join(__dirname, "..", "dist", "index.html"); // prod doğru yol
+      win.loadFile(indexHtml).catch(err => console.error("loadFile error:", err));
+    }
+  });
 
-  // Yükleme/Çökme olayları -> log
+  // Loglar – görünmeme nedenini yakalar
   win.webContents.on("did-fail-load", (e, code, desc, url, isMainFrame) => {
-    console.error("did-fail-load", { code, desc, url, isMainFrame });
+    console.error("did-fail-load", { code, desc, url, isMainFrame, urlTried: win.webContents.getURL() });
   });
   win.webContents.on("render-process-gone", (e, details) => {
     console.error("render-process-gone", details);
   });
   win.on("unresponsive", () => console.error("Window unresponsive"));
 
-  // Görünürlük
-  win.once("ready-to-show", () => {
+  // Görünürlük garantisi
+  const forceShow = () => {
     try {
-      if (win.isMinimized()) win.restore();
+      if (win.isDestroyed()) return;
       const s = clampToScreen(win.getBounds());
       win.setBounds(s);
-      win.show(); win.focus();
+      win.setSkipTaskbar(false);
+      win.setFocusable(true);
+      if (win.isMinimized()) win.restore();
+      win.show(); win.focus(); win.moveTop();
 
-      // bazı makinelerde görünürlüğü garantilemek için kısa AOT toggle
+      // kısa süre AlwaysOnTop aç/kapat — bazı makinelerde “ön plana getir”
       win.setAlwaysOnTop(true, "screen-saver");
-      setTimeout(() => win.setAlwaysOnTop(false), 300);
-    } catch (e) {
-      console.error("ready-to-show show() error", e);
-    }
-  });
+      setTimeout(() => !win.isDestroyed() && win.setAlwaysOnTop(false), 300);
+    } catch (e) { console.error("forceShow error", e); }
+  };
 
-  // Fallback: 3 sn sonra hâlâ görünmüyorsa zorla göster
-  setTimeout(() => {
-    if (!win.isDestroyed() && !win.isVisible()) {
-      try {
-        const s = clampToScreen({ x: 100, y: 100, width: 1200, height: 740 });
-        win.setBounds(s);
-        win.show(); win.focus();
-        win.moveTop();
-      } catch (e) {
-        console.error("force-show fallback error", e);
-      }
-    }
-  }, 3000);
+  win.once("ready-to-show", forceShow);
+  win.webContents.once("dom-ready", forceShow);
+  setTimeout(() => { if (!win.isVisible()) forceShow(); }, 3000);
 
   return win;
 }
