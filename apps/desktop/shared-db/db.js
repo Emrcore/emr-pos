@@ -1,19 +1,32 @@
-const fs = require("fs");
-const path = require("path");
-const Database = require("better-sqlite3");
-function getUserDataDir() {
-  try { const { app } = require("electron"); if (app && app.getPath) return app.getPath("userData"); } catch(_) {}
-  return path.join(process.cwd(), ".emr-pos");
-}
-function ensureDir(dir) { fs.mkdirSync(dir, { recursive: true }); }
-function openDb(baseDir) {
-  const root = baseDir || getUserDataDir();
-  ensureDir(root);
-  const dbPath = path.join(root, "emr-pos.sqlite3");
-  console.log("[EMR POS] DB path:", dbPath);
-  const db = new Database(dbPath);
+// apps/desktop/shared-db/db.js  (ESM)
+import fs from "fs";
+import path from "path";
+import os from "os";
+import Database from "better-sqlite3";
+
+/**
+ * rootDir: genelde Electron'dan app.getPath("userData") gelecek
+ */
+export function openDb(rootDir) {
+  const baseDir = rootDir || path.join(os.homedir(), ".emr-pos");
+  const dataDir = path.join(baseDir, "data");
+
+  // Gerekli klasörleri oluþtur
+  fs.mkdirSync(dataDir, { recursive: true });
+
+  const dbPath = path.join(dataDir, "emr-pos.sqlite3");
+
+  // Dosya varsa açar, yoksa oluþturur
+  const db = new Database(dbPath, {
+    fileMustExist: false,
+    timeout: 5000,
+  });
+
+  // Saðlamlýk/performans için mantýklý pragmalar
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = NORMAL");
+
   return db;
 }
-module.exports = { openDb };
+
+export default { openDb };
