@@ -1,93 +1,103 @@
-// electron/main.cjs
+// apps/desktop/electron/main.cjs
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 
-let win;
-let db;                 // better-sqlite3 handle
-let openDb;             // ESM'den gelecek fonksiyon
-const modCache = {};    // ESM modüllerini bir kez yükleyip cache’leyelim
+// ---- single-instance: varsa onu öne getir
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) app.quit();
+else {
+  app.on("second-instance", () => {
+    if (global.win) {
+      if (global.win.isMinimized()) global.win.restore();
+      global.win.show(); global.win.focus();
+    }
+  });
+}
+
+let db, repos = {};
+async function loadRepos() {
+  // shared-db ESM ise dinamik import ile al
+  const { openDb } = await import(path.join(__dirname, "..", "shared-db", "db.js"));
+  repos.products = await import(path.join(__dirname, "..", "shared-db", "repositories", "productsRepo.js"));
+  repos.sales    = await import(path.join(__dirname, "..", "shared-db", "repositories", "salesRepo.js"));
+  repos.settings = await import(path.join(__dirname, "..", "shared-db", "repositories", "settingsRepo.js"));
+  repos.reports  = await import(path.join(__dirname, "..", "shared-db", "repositories", "reportsRepo.js"));
+  const appDataDir = path.join(app.getPath("appData"), "emr-pos");
+  db = openDb(appDataDir);
+}
 
 function createWindow() {
-  win = new BrowserWindow({
+  const win = new BrowserWindow({
     width: 1280,
     height: 800,
+    show: false,                 // ready-to-show ile aç
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false
     }
   });
+  global.win = win;
 
+  // Dev vs Prod içerik
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL);
     win.webContents.openDevTools({ mode: "bottom" });
   } else {
-    win.loadFile(path.join(__dirname, "../index.html"));
+    // ÖNEMLİ: prod’da dist/index.html yükleyin
+    win.loadFile(path.join(__dirname, "..", "dist", "index.html"));
   }
-}
 
-// ESM modülünü CJS içinden güvenli yükleme (dinamik import)
-async function use(modulePath) {
-  if (!modCache[modulePath]) {
-    modCache[modulePath] = import(modulePath);
-  }
-  return modCache[modulePath];
+  // Görünürlük & konum güvenlikleri
+  win.once("ready-to-show", () => {
+    try {
+      if (win.isMinimized()) win.restore();
+      win.center();
+      win.show();
+      win.focus();
+      // bazen “görünmez” kalabiliyor; bir kez AOT toggling
+      win.setAlwaysOnTop(true, "screen-saver");
+      setTimeout(() => win.setAlwaysOnTop(false), 300);
+    } catch {}
+  });
+
+  // ready-to-show gelmezse 3 sn sonra zorla aç
+  setTimeout(() => {
+    if (!win.isVisible()) {
+      try {
+        win.setPosition(100, 100);
+        win.show(); win.focus();
+      } catch {}
+    }
+  }, 3000);
+
+  return win;
 }
 
 app.whenReady().then(async () => {
-  // shared-db/db.js ESM -> dinamik import ile al
-  const dbMod = await use("../shared-db/db.js");
-  openDb = dbMod.openDb; // named export bekleniyor
-
-  const appDataDir = path.join(app.getPath("appData"), "emr-pos");
-  db = openDb(appDataDir);
-
+  await loadRepos();
   createWindow();
 });
 
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
 app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 
-// ---------------- IPC ----------------
-// Ürünler
-ipcMain.handle("db:products:list", async () => {
-  const m = await use("../shared-db/repositories/productsRepo.js"); // ESM
-  return m.list(db);
-});
-ipcMain.handle("db:products:findByBarcode", async (_e, barcode) => {
-  const m = await use("../shared-db/repositories/productsRepo.js");
-  return m.findByBarcode(db, barcode);
-});
-ipcMain.handle("db:products:insert", async (_e, product) => {
-  const m = await use("../shared-db/repositories/productsRepo.js");
-  return m.insert(db, product);
-});
+// ---------- IPC ----------
+ipcMain.handle("db:products:list", () => repos.products.list(db));
+ipcMain.handle("db:products:findByBarcode", (e, barcode) => repos.products.findByBarcode(db, barcode));
+ipcMain.handle("db:products:insert", (e, product) => repos.products.insert(db, product));
 
-// Satış
-ipcMain.handle("db:sales:create", async (_e, payload) => {
-  const m = await use("../shared-db/repositories/salesRepo.js");
-  return m.create(db, payload);
-});
+ipcMain.handle("db:sales:create", (e, payload) => repos.sales.create(db, payload));
 
-// Ayarlar
-ipcMain.handle("db:settings:get", async (_e, key) => {
-  const m = await use("../shared-db/repositories/settingsRepo.js");
-  return m.get(db, key);
-});
-ipcMain.handle("db:settings:set", async (_e, { key, value }) => {
-  const m = await use("../shared-db/repositories/settingsRepo.js");
-  return m.set(db, key, value);
-});
+ipcMain.handle("db:settings:get", (e, key) => repos.settings.get(db, key));
+ipcMain.handle("db:settings:set", (e, { key, value }) => repos.settings.set(db, key, value));
 
-// Raporlar
-ipcMain.handle("report:summary", async (_e, { start, end }) => {
-  const m = await use("../shared-db/repositories/reportsRepo.js");
-  return m.getSummary(db, start, end);
-});
+ipcMain.handle("report:summary", (e, { start, end }) => repos.reports.getSummary(db, start, end));
 
-// Yazdırma
-ipcMain.handle("system:getPrinters", () => win.webContents.getPrinters());
-ipcMain.handle("print:receipt", async (_e, data) => {
+// Basit yazdırma penceresi
+ipcMain.handle("system:getPrinters", () => global.win?.webContents.getPrinters());
+ipcMain.handle("print:receipt", async (e, data) => {
   const p = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
   const html = buildReceiptHTML(data);
   await p.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`);
