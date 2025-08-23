@@ -1,78 +1,121 @@
-// CommonJS wrapper for better-sqlite3 (Electron main process friendly)
-const fs = require('fs');
-const path = require('path');
-const Database = require('better-sqlite3');
+// apps/desktop/shared-db/index.cjs
+const fs = require("node:fs");
+const path = require("node:path");
+const os = require("node:os");
+const Database = require("better-sqlite3");
 
-/**
- * Resolve DB file path.
- * - If running inside Electron main, place it under app.getPath('userData').
- * - Otherwise fall back to project root.
- */
-function resolveDbPath(filename = 'emr-pos.sqlite') {
-  try {
-    // late-require to avoid optional electron dependency when unit testing
-    const { app } = require('electron');
-    const base = app.getPath('userData'); // e.g. C:\Users\<you>\AppData\Roaming\EMR POS
-    return path.join(base, filename);
-  } catch {
-    // non-electron context (tests/scripts)
-    return path.join(process.cwd(), filename);
+function safeMkdir(p) {
+  fs.mkdirSync(p, { recursive: true });
+  // yazılabilir mi test et
+  const t = path.join(p, ".__writecheck");
+  fs.writeFileSync(t, "ok");
+  fs.unlinkSync(t);
+}
+
+function extendLongPathWin(p) {
+  if (process.platform === "win32" && !p.startsWith("\\\\?\\")) {
+    if (p.length >= 240) return "\\\\?\\" + p;
   }
+  return p;
 }
 
 /**
- * Open a DB with sane defaults for desktop apps.
- * @param {string} filePath - absolute or relative path; if falsy uses resolveDbPath()
- * @param {object} options - passed to better-sqlite3 (readonly, fileMustExist, timeout, etc.)
+ * baseDir = app.getPath('userData') gönderin.
  */
-function openDb(filePath, options = {}) {
-  const dbFile = filePath ? path.resolve(filePath) : resolveDbPath();
-  // ensure dir exists
-  fs.mkdirSync(path.dirname(dbFile), { recursive: true });
+function openDb(baseDir) {
+  const tried = [];
 
-  const db = new Database(dbFile, {
-    // default busy timeout to 5s unless overridden
-    timeout: 5000,
-    ...options,
-  });
+  const candidates = [];
+  if (process.env.EMR_POS_DATA_DIR) candidates.push(process.env.EMR_POS_DATA_DIR); // override
+  candidates.push(baseDir);
+  if (process.platform === "win32" && process.env.LOCALAPPDATA) {
+    candidates.push(path.join(process.env.LOCALAPPDATA, "EMR POS"));
+  }
+  candidates.push(path.join(os.tmpdir(), "emr-pos"));
 
-  // sensible pragmas
-  db.pragma('journal_mode = WAL');
-  db.pragma('synchronous = NORMAL');
-  db.pragma('foreign_keys = ON');
+  let chosenBase = null;
+  let lastErr = null;
+
+  for (const cand of candidates) {
+    try {
+      safeMkdir(cand);
+      chosenBase = cand;
+      break;
+    } catch (e) {
+      tried.push(`${cand} -> ${e.message}`);
+      lastErr = e;
+    }
+  }
+
+  if (!chosenBase) {
+    throw new Error("Veri dizini oluşturulamadı:\n" + tried.join("\n"));
+  }
+
+  const dataDir = path.join(chosenBase, "data");
+  safeMkdir(dataDir);
+
+  // *** ÖNEMLİ: Dosya adını ekle! ***
+  const dbFile = extendLongPathWin(path.join(dataDir, "emr-pos.sqlite"));
+
+  // logla
+  console.log("[emr-pos] DB dir:", dataDir);
+  console.log("[emr-pos] DB file:", dbFile);
+
+  // dosyayı dokundur (varsa no-op)
+  try {
+    const fd = fs.openSync(dbFile, "a");
+    fs.closeSync(fd);
+  } catch (e) {
+    throw new Error("DB dosyası oluşturulamadı: " + dbFile + " / " + e.message);
+  }
+
+  const db = new Database(dbFile);
+  db.pragma("journal_mode = WAL");
+  db.pragma("foreign_keys = ON");
+  db.pragma("synchronous = NORMAL");
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS products (
+      id TEXT PRIMARY KEY,
+      barcode TEXT UNIQUE,
+      name TEXT NOT NULL,
+      price REAL NOT NULL,
+      stock REAL DEFAULT 0,
+      createdAt TEXT DEFAULT (datetime('now'))
+    )
+  `).run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )
+  `).run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS sales (
+      id TEXT PRIMARY KEY,
+      total REAL NOT NULL,
+      payment TEXT,
+      createdAt TEXT DEFAULT (datetime('now'))
+    )
+  `).run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS sale_items (
+      id TEXT PRIMARY KEY,
+      saleId TEXT NOT NULL,
+      productId TEXT,
+      name TEXT NOT NULL,
+      qty REAL NOT NULL,
+      unitPrice REAL NOT NULL,
+      total REAL NOT NULL,
+      FOREIGN KEY (saleId) REFERENCES sales(id) ON DELETE CASCADE,
+      FOREIGN KEY (productId) REFERENCES products(id)
+    )
+  `).run();
 
   return db;
 }
 
-/**
- * Tiny helper API around prepared statements (optional sugar).
- */
-function helpers(db) {
-  return {
-    exec(sql) {
-      return db.exec(sql);
-    },
-    run(sql, params = {}) {
-      return db.prepare(sql).run(params);
-    },
-    get(sql, params = {}) {
-      return db.prepare(sql).get(params);
-    },
-    all(sql, params = {}) {
-      return db.prepare(sql).all(params);
-    },
-    transaction(fn) {
-      return db.transaction(fn);
-    },
-    close() {
-      db.close();
-    },
-  };
-}
-
-module.exports = {
-  Database,        // raw constructor if you want full control
-  openDb,          // opinionated opener with pragmas
-  resolveDbPath,   // where the DB file lives
-  helpers,         // small sugar layer
-};
+module.exports = { openDb };
