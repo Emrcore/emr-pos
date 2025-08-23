@@ -150,10 +150,13 @@ app.whenReady().then(async () => {
     const dataDir = app.getPath("userData");
     console.log("[emr-pos] userData:", dataDir);
 
-    db = dbApi.openDb(dataDir);
-    if (!db) throw new Error("openDb bir DB nesnesi döndürmedi");
+    const maybeDb = dbApi.openDb(dataDir);
+    db = (maybeDb && typeof maybeDb.then === "function") ? await maybeDb : maybeDb;
 
-    // DB hazır -> IPC’leri kaydet, sonra pencereyi aç
+    if (!db || typeof db.prepare !== "function") {
+      throw new Error("openDb geçerli bir DB nesnesi döndürmedi (prepare yok)");
+    }
+
     registerIpc();
     createWindow();
   } catch (err) {
