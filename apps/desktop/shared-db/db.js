@@ -1,30 +1,35 @@
-// apps/desktop/shared-db/db.js  (ESM)
-import fs from "fs";
-import path from "path";
-import Database from "better-sqlite3";
+// shared-db/db.js  (ESM)
+import path from "node:path";
+import { createRequire } from "node:module";
 
-/**
- * appDataDir: Electron'dan gelen app.getPath('userData')
- * Örn: C:\Users\...\AppData\Roaming\EMR POS
- */
-export function openDb(appDataDir) {
-  // Uygulamanýn yazacaðý dizin: %APPDATA%/EMR POS/data
-  const dataDir = path.join(appDataDir, "data");
-  // Klasörleri *önce* oluþtur
-  fs.mkdirSync(dataDir, { recursive: true });
+const require = createRequire(import.meta.url);
 
-  // DB yolu
-  const dbPath = path.join(dataDir, "emr-pos.sqlite");
+function loadBetterSqlite3() {
+  // 1) Normal çözümleme (dev ortamýnda veya asar içinden çaðrýlýyorsa çalýþýr)
+  try {
+    return require("better-sqlite3");
+  } catch {}
 
-  // Ýstersen logla (sorun olursa path'i görürüz)
-  // console.log("[DB] Using file:", dbPath);
+  // 2) Prod: shared-db asar DIÞINDAYKEN, asýl node_modules asar ÝÇÝNDE
+  const candidates = [
+    path.join(process.resourcesPath, "app.asar", "node_modules", "better-sqlite3"),
+    path.join(process.resourcesPath, "app.asar.unpacked", "node_modules", "better-sqlite3"),
+  ];
+  for (const p of candidates) {
+    try {
+      return require(p);
+    } catch {}
+  }
 
-  // Dosya yoksa otomatik oluþturur; klasör oluþtuðu için sorun çýkmaz
-  const db = new Database(dbPath, { timeout: 5000 });
-
-  // Saðlamlýk ayarlarý
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-
-  return db;
+  throw new Error(
+    `better-sqlite3 bulunamadý. Denenen yollar: ${candidates.join(" , ")}`
+  );
 }
+
+const Database = loadBetterSqlite3();
+
+// ——— aþaðýda sizin mevcut openDb ve diðer kodlarýnýz aynen devam etsin ———
+export function openDb(baseDir) {
+  // ... mevcut openDb içeriðiniz ...
+}
+export default { openDb };
