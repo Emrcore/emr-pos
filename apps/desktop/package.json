@@ -32,14 +32,10 @@
   "build": {
     "appId": "com.emrcore.pos",
     "productName": "EMR POS",
-    "directories": {
-      "output": "release"
-    },
+    "directories": { "output": "release" },
     "artifactName": "EMR-POS-${version}-Setup.${ext}",
     "asar": true,
-    "asarUnpack": [
-      "**/*.node"
-    ],
+    "asarUnpack": ["**/*.node"],
     "files": [
       "electron/**/*",
       "shared-db/**/*",

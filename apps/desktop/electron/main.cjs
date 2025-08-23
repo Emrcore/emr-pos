@@ -1,34 +1,53 @@
 // electron/main.cjs
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const path = require("path");
-const fs = require("fs");
 const { pathToFileURL } = require("url");
 
-function fromApp(...p) {
-  // asar içinde çalışırken app.getAppPath() -> .../resources/app.asar
-  return path.join(app.getAppPath(), ...p);
-}
-function fileUrl(p) { return pathToFileURL(p).href; }
+function toFileUrl(p) { return pathToFileURL(p).href; }
+async function importESM(filePath) { return import(toFileUrl(filePath)); }
 
+// shared-db’yi iki konumdan biri üzerinden yükle:
+// 1) resourcesPath/shared-db (asar dışı kopya varsa)
+// 2) __dirname/../shared-db (asar içi)
 async function loadDbApi() {
-  // shared-db index.cjs varsa CJS üzerinden alınır; yoksa ESM dosyaları dinamik import edilir.
-  const cjsIndex = fromApp("shared-db", "index.cjs");
-  if (fs.existsSync(cjsIndex)) {
-    return require(cjsIndex);
+  const candidates = [
+    path.join(process.resourcesPath, "shared-db", "index.cjs"),
+    path.join(__dirname, "..", "shared-db", "index.cjs"),
+  ];
+  const tried = [];
+  for (const idx of candidates) {
+    try {
+      console.log("[emr-pos] ESM yükleme deneniyor:", idx);
+      return await importESM(idx);
+    } catch (e) {
+      tried.push(`${idx} -> ${e.message}`);
+    }
   }
-  const base = fromApp("shared-db");
-  const openDbMod    = await import(fileUrl(path.join(base, "db.js")));
-  const productsRepo = await import(fileUrl(path.join(base, "repositories", "productsRepo.js")));
-  const salesRepo    = await import(fileUrl(path.join(base, "repositories", "salesRepo.js")));
-  const settingsRepo = await import(fileUrl(path.join(base, "repositories", "settingsRepo.js")));
-  const reports      = await import(fileUrl(path.join(base, "repositories", "reportsRepo.js")));
-  return {
-    openDb: openDbMod.openDb || openDbMod.default || openDbMod,
-    productsRepo: productsRepo.default || productsRepo,
-    salesRepo: salesRepo.default || salesRepo,
-    settingsRepo: settingsRepo.default || settingsRepo,
-    reports: reports.default || reports
-  };
+
+  // index.cjs yoksa tek tek modülleri dene (her iki kök için)
+  const roots = [ path.join(process.resourcesPath, "shared-db"),
+                  path.join(__dirname, "..", "shared-db") ];
+  for (const root of roots) {
+    try {
+      console.log("[emr-pos] Modül kökü deneniyor:", root);
+      const openDbMod    = await importESM(path.join(root, "db.js"));
+      const productsRepo = await importESM(path.join(root, "repositories/productsRepo.js"));
+      const salesRepo    = await importESM(path.join(root, "repositories/salesRepo.js"));
+      const settingsRepo = await importESM(path.join(root, "repositories/settingsRepo.js"));
+      const reports      = await importESM(path.join(root, "repositories/reportsRepo.js"));
+      return {
+        openDb: openDbMod.openDb || openDbMod.default || openDbMod,
+        productsRepo: productsRepo.default || productsRepo,
+        salesRepo: salesRepo.default || salesRepo,
+        settingsRepo: settingsRepo.default || settingsRepo,
+        reports: reports.default || reports
+      };
+    } catch (e) {
+      tried.push(`${root} -> ${e.message}`);
+    }
+  }
+
+  throw new Error("shared-db yüklenemedi:\n" + tried.map(s => " - " + s).join("\n"));
 }
 
 let win, db, dbApi;
@@ -44,12 +63,13 @@ function createWindow() {
       nodeIntegration: false
     }
   });
+
   win.once("ready-to-show", () => { win.show(); win.focus(); });
 
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
-    win.loadFile(path.join(__dirname, "../index.html"));
+    win.loadFile(path.join(__dirname, "..", "index.html"));
   }
 }
 
@@ -57,15 +77,14 @@ app.whenReady().then(async () => {
   try {
     dbApi = await loadDbApi();
 
-    // DB dosyaları: %APPDATA%/EMR POS (Windows) vs ~/Library/App... (mac) vs ~/.config/EMR POS (linux)
-    const dataDir = app.getPath("userData");
-    fs.mkdirSync(dataDir, { recursive: true });
-    db = dbApi.openDb(dataDir);
+    const dataDir = app.getPath("userData"); // örn: C:\Users\...\AppData\Roaming\EMR POS
+    console.log("[emr-pos] userData:", dataDir);
 
+    db = dbApi.openDb(dataDir); // db.js içi logları da göreceksiniz
     createWindow();
   } catch (err) {
-    console.error(err);
-    dialog.showErrorBox("Başlatma Hatası", String(err && err.stack || err));
+    console.error("[emr-pos] Başlatma hatası:", err);
+    dialog.showErrorBox("Başlatma Hatası", String(err?.stack || err));
     app.quit();
   }
 });
@@ -77,14 +96,10 @@ app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) creat
 ipcMain.handle("db:products:list", () => dbApi.productsRepo.list(db));
 ipcMain.handle("db:products:findByBarcode", (e, barcode) => dbApi.productsRepo.findByBarcode(db, barcode));
 ipcMain.handle("db:products:insert", (e, product) => dbApi.productsRepo.insert(db, product));
-
 ipcMain.handle("db:sales:create", (e, payload) => dbApi.salesRepo.create(db, payload));
-
 ipcMain.handle("db:settings:get", (e, key) => dbApi.settingsRepo.get(db, key));
 ipcMain.handle("db:settings:set", (e, { key, value }) => dbApi.settingsRepo.set(db, key, value));
-
 ipcMain.handle("report:summary", (e, { start, end }) => dbApi.reports.getSummary(db, start, end));
-
 ipcMain.handle("system:getPrinters", () => win.webContents.getPrinters());
 ipcMain.handle("print:receipt", async (e, data) => {
   const p = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
