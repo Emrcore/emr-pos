@@ -35,7 +35,8 @@
     "directories": { "output": "release" },
     "artifactName": "EMR-POS-${version}-Setup.${ext}",
     "asar": true,
-    "asarUnpack": ["**/*.node"],
+    "asarUnpack": ["**/*.node",
+                    "electron/preload.cjs"],
     "files": [
       "electron/**/*",
       "shared-db/**/*",
