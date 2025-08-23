@@ -31,16 +31,16 @@
   },
   "build": {
   "asar": true,
-  "asarUnpack": [
-    "**/*.node",
-    "electron/preload.cjs"
-  ],
+  "asarUnpack": ["**/*.node", "electron/preload.cjs"],
   "files": [
     "electron/**/*",
     "shared-db/**/*",
     "dist/**/*",
     "package.json"
   ],
+  "win": { "target": ["nsis"], "signAndEditExecutable": false, "forceCodeSigning": false },
+  "publish": ["github"]
+}
     "extraResources": [
       {
         "from": "electron/ip-config.json",
