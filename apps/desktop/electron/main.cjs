@@ -2,33 +2,68 @@
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const { pathToFileURL } = require("url");
 
-// ---- shared-db modülünü bulunabilecek 4 konumda ara (js/mjs/cjs destekli) ----
-function loadDbApi() {
+function toFileUrl(p) { return pathToFileURL(p).href; }
+async function tryImport(p) { return import(toFileUrl(p)); }
+function tryRequire(p) { return require(p); }
+
+async function loadDbApi() {
+  // Aranacak dizin + dosya adayları
   const roots = [
+    // asar içi
     path.join(__dirname, "..", "shared-db"),
+    // asar dışına kopyalandıysa
     path.join(process.resourcesPath, "shared-db"),
+    // olası çalışma dizini
     path.join(process.cwd(), "shared-db"),
   ];
-  const bases = ["index.cjs", "index.js", "index.mjs"];
+  const files = ["index.mjs", "index.js", "index.cjs"];
 
   const tried = [];
+
+  // 1) index.* dene (önce import(), sonra require)
   for (const r of roots) {
-    for (const b of bases) {
-      const p = path.join(r, b);
+    for (const f of files) {
+      const p = path.join(r, f);
+      if (!fs.existsSync(p)) { tried.push(`yok: ${p}`); continue; }
       try {
-        if (fs.existsSync(p)) {
-          // CJS içindeyiz: require tümünü açar (mjs de loader’ı olan bundle içindedir)
-          // eslint-disable-next-line global-require, import/no-dynamic-require
-          const mod = require(p);
-          return mod && mod.default ? mod.default : mod;
-        }
-        tried.push(`yok: ${p}`);
+        const mod = await tryImport(p).catch(() => null) || tryRequire(p);
+        return mod && (mod.default || mod);
       } catch (e) {
         tried.push(`${p} -> ${e.message}`);
       }
     }
   }
+
+  // 2) index yoksa tek tek modülleri import et (import() ile)
+  for (const r of roots) {
+    const paths = {
+      db: path.join(r, "db.js"),
+      products: path.join(r, "repositories", "productsRepo.js"),
+      sales: path.join(r, "repositories", "salesRepo.js"),
+      settings: path.join(r, "repositories", "settingsRepo.js"),
+      reports: path.join(r, "repositories", "reportsRepo.js"),
+    };
+    try {
+      for (const k of Object.values(paths)) if (!fs.existsSync(k)) throw new Error(`yok: ${k}`);
+      const openDbMod    = await tryImport(paths.db);
+      const productsRepo = await tryImport(paths.products);
+      const salesRepo    = await tryImport(paths.sales);
+      const settingsRepo = await tryImport(paths.settings);
+      const reports      = await tryImport(paths.reports);
+      return {
+        openDb: openDbMod.openDb || openDbMod.default || openDbMod,
+        productsRepo: productsRepo.default || productsRepo,
+        salesRepo:    salesRepo.default    || salesRepo,
+        settingsRepo: settingsRepo.default || settingsRepo,
+        reports:      reports.default      || reports,
+      };
+    } catch (e) {
+      tried.push(`${r} (tek tek) -> ${e.message}`);
+    }
+  }
+
   throw new Error("shared-db yüklenemedi:\n" + tried.map(s => " - " + s).join("\n"));
 }
 
@@ -37,12 +72,9 @@ let db = null;
 let dbApi = null;
 
 function registerIpc() {
-  if (!dbApi || !db) throw new Error("IPC kaydı için DB hazır değil");
-
-  // Bazı repo implementasyonları module-level db bekleyebilir
+  if (!dbApi || !db) throw new Error("IPC için DB hazır değil");
   try { dbApi.db = db; } catch {}
 
-  // ---------- IPC ----------
   ipcMain.handle("db:products:list", () => dbApi.productsRepo.list(db));
   ipcMain.handle("db:products:findByBarcode", (_e, barcode) => dbApi.productsRepo.findByBarcode(db, barcode));
   ipcMain.handle("db:products:insert", (_e, product) => dbApi.productsRepo.insert(db, product));
@@ -94,14 +126,13 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   try {
-    dbApi = loadDbApi();
-
+    dbApi = await loadDbApi();
     const dataDir = app.getPath("userData");
-    db = dbApi.openDb(dataDir);     // better-sqlite3 instance
+    db = dbApi.openDb(dataDir);
 
-    // **ÖNCE** IPC handler’larını kaydet, **SONRA** pencereyi yarat
+    // **ÖNCE** IPC, **SONRA** pencere
     registerIpc();
     createWindow();
   } catch (err) {
