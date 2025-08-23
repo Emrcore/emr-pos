@@ -5,60 +5,79 @@ const fs = require("fs");
 const { pathToFileURL } = require("url");
 
 function toFileUrl(p) { return pathToFileURL(p).href; }
-async function tryImport(p) { return import(toFileUrl(p)); }
-function tryRequire(p) { return require(p); }
+async function dynImport(p) { return import(toFileUrl(p)); }
+
+async function normalizeDbApi(mod) {
+  // default veya named export yakala
+  const m = mod?.default ? mod.default : mod;
+  const openDb =
+    m?.openDb || m?.db?.openDb || m?.default?.openDb || mod?.openDb;
+  const productsRepo =
+    m?.productsRepo || m?.repositories?.productsRepo || m?.default?.productsRepo;
+  const salesRepo =
+    m?.salesRepo || m?.repositories?.salesRepo || m?.default?.salesRepo;
+  const settingsRepo =
+    m?.settingsRepo || m?.repositories?.settingsRepo || m?.default?.settingsRepo;
+  const reports =
+    m?.reports || m?.repositories?.reports || m?.default?.reports;
+
+  return { openDb, productsRepo, salesRepo, settingsRepo, reports };
+}
 
 async function loadDbApi() {
-  // Aranacak dizin + dosya adayları
   const roots = [
-    // asar içi
-    path.join(__dirname, "..", "shared-db"),
-    // asar dışına kopyalandıysa
-    path.join(process.resourcesPath, "shared-db"),
-    // olası çalışma dizini
-    path.join(process.cwd(), "shared-db"),
+    path.join(__dirname, "..", "shared-db"),           // asar içi
+    path.join(process.resourcesPath, "shared-db"),     // asar dışı kopya (extraResources)
+    path.join(process.cwd(), "shared-db"),             // dev olasılığı
   ];
   const files = ["index.mjs", "index.js", "index.cjs"];
-
   const tried = [];
 
-  // 1) index.* dene (önce import(), sonra require)
+  // 1) index.* ile tek seferde
   for (const r of roots) {
     for (const f of files) {
       const p = path.join(r, f);
       if (!fs.existsSync(p)) { tried.push(`yok: ${p}`); continue; }
       try {
-        const mod = await tryImport(p).catch(() => null) || tryRequire(p);
-        return mod && (mod.default || mod);
+        const mod = await dynImport(p);
+        const api = await normalizeDbApi(mod);
+        if (!api.openDb) throw new Error("openDb exportu bulunamadı");
+        return api;
       } catch (e) {
         tried.push(`${p} -> ${e.message}`);
       }
     }
   }
 
-  // 2) index yoksa tek tek modülleri import et (import() ile)
+  // 2) index yoksa tek tek modüller
   for (const r of roots) {
-    const paths = {
-      db: path.join(r, "db.js"),
-      products: path.join(r, "repositories", "productsRepo.js"),
-      sales: path.join(r, "repositories", "salesRepo.js"),
-      settings: path.join(r, "repositories", "settingsRepo.js"),
-      reports: path.join(r, "repositories", "reportsRepo.js"),
-    };
     try {
-      for (const k of Object.values(paths)) if (!fs.existsSync(k)) throw new Error(`yok: ${k}`);
-      const openDbMod    = await tryImport(paths.db);
-      const productsRepo = await tryImport(paths.products);
-      const salesRepo    = await tryImport(paths.sales);
-      const settingsRepo = await tryImport(paths.settings);
-      const reports      = await tryImport(paths.reports);
-      return {
-        openDb: openDbMod.openDb || openDbMod.default || openDbMod,
-        productsRepo: productsRepo.default || productsRepo,
-        salesRepo:    salesRepo.default    || salesRepo,
-        settingsRepo: settingsRepo.default || settingsRepo,
-        reports:      reports.default      || reports,
+      const need = (rel) => {
+        const p = path.join(r, rel);
+        if (!fs.existsSync(p)) throw new Error(`yok: ${p}`);
+        return p;
       };
+      const dbP        = need("db.js");
+      const prodP      = need("repositories/productsRepo.js");
+      const salesP     = need("repositories/salesRepo.js");
+      const settingsP  = need("repositories/settingsRepo.js");
+      const reportsP   = need("repositories/reportsRepo.js");
+
+      const dbMod       = await dynImport(dbP);
+      const productsMod = await dynImport(prodP);
+      const salesMod    = await dynImport(salesP);
+      const settingsMod = await dynImport(settingsP);
+      const reportsMod  = await dynImport(reportsP);
+
+      const api = await normalizeDbApi({
+        openDb: dbMod.openDb || dbMod.default?.openDb,
+        productsRepo: productsMod.default || productsMod,
+        salesRepo:    salesMod.default    || salesMod,
+        settingsRepo: settingsMod.default || settingsMod,
+        reports:      reportsMod.default  || reportsMod,
+      });
+      if (!api.openDb) throw new Error("openDb exportu bulunamadı (tek tek)");
+      return api;
     } catch (e) {
       tried.push(`${r} (tek tek) -> ${e.message}`);
     }
@@ -72,9 +91,6 @@ let db = null;
 let dbApi = null;
 
 function registerIpc() {
-  if (!dbApi || !db) throw new Error("IPC için DB hazır değil");
-  try { dbApi.db = db; } catch {}
-
   ipcMain.handle("db:products:list", () => dbApi.productsRepo.list(db));
   ipcMain.handle("db:products:findByBarcode", (_e, barcode) => dbApi.productsRepo.findByBarcode(db, barcode));
   ipcMain.handle("db:products:insert", (_e, product) => dbApi.productsRepo.insert(db, product));
@@ -129,10 +145,15 @@ function createWindow() {
 app.whenReady().then(async () => {
   try {
     dbApi = await loadDbApi();
-    const dataDir = app.getPath("userData");
-    db = dbApi.openDb(dataDir);
+    if (!dbApi?.openDb) throw new Error("shared-db yüklendi ama openDb yok");
 
-    // **ÖNCE** IPC, **SONRA** pencere
+    const dataDir = app.getPath("userData");
+    console.log("[emr-pos] userData:", dataDir);
+
+    db = dbApi.openDb(dataDir);
+    if (!db) throw new Error("openDb bir DB nesnesi döndürmedi");
+
+    // DB hazır -> IPC’leri kaydet, sonra pencereyi aç
     registerIpc();
     createWindow();
   } catch (err) {
