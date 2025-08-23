@@ -9,11 +9,11 @@ function loadDbApi() {
   // Asar içi ve dışı olasılıkları sırayla dene
   const candidates = [
     // üretimde (__dirname -> resources/app.asar/electron)
-    path.join(__dirname, "..", "shared-db", "index.cjs"),
+    path.join(__dirname, "..", "shared-db", "index.mjs"),
     // bazen extraResources ile kopyalanırsa:
-    path.join(process.resourcesPath, "shared-db", "index.cjs"),
+    path.join(process.resourcesPath, "shared-db", "index.mjs"),
     // geliştirme ortamı (repo kökü)
-    path.join(process.cwd(), "shared-db", "index.cjs"),
+    path.join(process.cwd(), "shared-db", "index.mjs"),
   ];
 
   const tried = [];
