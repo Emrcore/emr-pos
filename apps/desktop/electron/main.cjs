@@ -1,6 +1,7 @@
 // electron/main.cjs
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const path = require("path");
+const fs = require("fs");
 const { pathToFileURL } = require("url");
 
 function toFileUrl(p) { return pathToFileURL(p).href; }
@@ -69,7 +70,17 @@ function createWindow() {
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
-    win.loadFile(path.join(__dirname, "..", "index.html"));
+    // >>> PROD: Vite çıktısı
+    const indexPath = path.join(__dirname, "..", "dist", "index.html");
+    if (!fs.existsSync(indexPath)) {
+      const msg = "dist/index.html bulunamadı: " + indexPath;
+      console.error("[emr-pos]", msg);
+      dialog.showErrorBox("Başlatma Hatası", msg);
+      app.quit();
+      return;
+    }
+    console.log("[emr-pos] loadFile:", indexPath);
+    win.loadFile(indexPath);
   }
 }
 
@@ -77,10 +88,10 @@ app.whenReady().then(async () => {
   try {
     dbApi = await loadDbApi();
 
-    const dataDir = app.getPath("userData"); // örn: C:\Users\...\AppData\Roaming\EMR POS
+    const dataDir = app.getPath("userData");
     console.log("[emr-pos] userData:", dataDir);
 
-    db = dbApi.openDb(dataDir); // db.js içi logları da göreceksiniz
+    db = dbApi.openDb(dataDir);
     createWindow();
   } catch (err) {
     console.error("[emr-pos] Başlatma hatası:", err);
