@@ -2,43 +2,66 @@
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const { pathToFileURL } = require("url");
 
-const toURL = (p) => pathToFileURL(p).href;
-const importESM = (p) => import(toURL(p));
+// ---- shared-db modülünü bulunabilecek 4 konumda ara (js/mjs/cjs destekli) ----
+function loadDbApi() {
+  const roots = [
+    path.join(__dirname, "..", "shared-db"),
+    path.join(process.resourcesPath, "shared-db"),
+    path.join(process.cwd(), "shared-db"),
+  ];
+  const bases = ["index.cjs", "index.js", "index.mjs"];
 
-let win, db, dbApi;
-
-async function loadDbApi() {
   const tried = [];
-  const tryOne = async (p) => {
-    try {
-      if (!fs.existsSync(p)) { tried.push(`yok: ${p}`); return null; }
-      const m = await importESM(p);
-      return m.default ?? m;
-    } catch (e) {
-      tried.push(`${p} -> ${e.message}`);
-      return null;
+  for (const r of roots) {
+    for (const b of bases) {
+      const p = path.join(r, b);
+      try {
+        if (fs.existsSync(p)) {
+          // CJS içindeyiz: require tümünü açar (mjs de loader’ı olan bundle içindedir)
+          // eslint-disable-next-line global-require, import/no-dynamic-require
+          const mod = require(p);
+          return mod && mod.default ? mod.default : mod;
+        }
+        tried.push(`yok: ${p}`);
+      } catch (e) {
+        tried.push(`${p} -> ${e.message}`);
+      }
     }
-  };
-
-  // 1) Asar dışına extraResources ile kopyalanmış klasör
-  const outside = path.join(process.resourcesPath, "shared-db", "index.js");
-  const m1 = await tryOne(outside);
-  if (m1) return m1;
-
-  // 2) Geliştirme / lokal
-  const local = path.join(__dirname, "..", "shared-db", "index.js");
-  const m2 = await tryOne(local);
-  if (m2) return m2;
-
-  // 3) Eski isimler (mjs) için fallback
-  const outsideM = path.join(process.resourcesPath, "shared-db", "index.mjs");
-  const localM   = path.join(__dirname, "..", "shared-db", "index.mjs");
-  const m3 = await tryOne(outsideM) || await tryOne(localM);
-  if (m3) return m3;
-
+  }
   throw new Error("shared-db yüklenemedi:\n" + tried.map(s => " - " + s).join("\n"));
+}
+
+let win = null;
+let db = null;
+let dbApi = null;
+
+function registerIpc() {
+  if (!dbApi || !db) throw new Error("IPC kaydı için DB hazır değil");
+
+  // Bazı repo implementasyonları module-level db bekleyebilir
+  try { dbApi.db = db; } catch {}
+
+  // ---------- IPC ----------
+  ipcMain.handle("db:products:list", () => dbApi.productsRepo.list(db));
+  ipcMain.handle("db:products:findByBarcode", (_e, barcode) => dbApi.productsRepo.findByBarcode(db, barcode));
+  ipcMain.handle("db:products:insert", (_e, product) => dbApi.productsRepo.insert(db, product));
+
+  ipcMain.handle("db:sales:create", (_e, payload) => dbApi.salesRepo.create(db, payload));
+
+  ipcMain.handle("db:settings:get", (_e, key) => dbApi.settingsRepo.get(db, key));
+  ipcMain.handle("db:settings:set", (_e, { key, value }) => dbApi.settingsRepo.set(db, key, value));
+
+  ipcMain.handle("report:summary", (_e, { start, end }) => dbApi.reports.getSummary(db, start, end));
+
+  ipcMain.handle("system:getPrinters", () => win.webContents.getPrinters());
+  ipcMain.handle("print:receipt", async (_e, data) => {
+    const p = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
+    const html = buildReceiptHTML(data);
+    await p.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`);
+    await p.webContents.print({ silent: false, printBackground: true });
+    p.close();
+  });
 }
 
 function createWindow() {
@@ -61,18 +84,25 @@ function createWindow() {
   } else {
     const indexPath = path.join(__dirname, "..", "dist", "index.html");
     if (!fs.existsSync(indexPath)) {
-      dialog.showErrorBox("Başlatma Hatası", "dist/index.html bulunamadı:\n" + indexPath);
+      const msg = "dist/index.html bulunamadı: " + indexPath;
+      console.error("[emr-pos]", msg);
+      dialog.showErrorBox("Başlatma Hatası", msg);
       app.quit(); return;
     }
+    console.log("[emr-pos] loadFile:", indexPath);
     win.loadFile(indexPath);
   }
 }
 
-app.whenReady().then(async () => {
+app.whenReady().then(() => {
   try {
-    dbApi = await loadDbApi();
+    dbApi = loadDbApi();
+
     const dataDir = app.getPath("userData");
-    db = dbApi.openDb(dataDir);
+    db = dbApi.openDb(dataDir);     // better-sqlite3 instance
+
+    // **ÖNCE** IPC handler’larını kaydet, **SONRA** pencereyi yarat
+    registerIpc();
     createWindow();
   } catch (err) {
     console.error("[emr-pos] Başlatma hatası:", err);
@@ -84,11 +114,33 @@ app.whenReady().then(async () => {
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
 app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 
-// IPC
-ipcMain.handle("db:products:list", () => dbApi.productsRepo.list(db));
-ipcMain.handle("db:products:findByBarcode", (e, barcode) => dbApi.productsRepo.findByBarcode(db, barcode));
-ipcMain.handle("db:products:insert", (e, product) => dbApi.productsRepo.insert(db, product));
-ipcMain.handle("db:sales:create", (e, payload) => dbApi.salesRepo.create(db, payload));
-ipcMain.handle("db:settings:get", (e, key) => dbApi.settingsRepo.get(db, key));
-ipcMain.handle("db:settings:set", (e, { key, value }) => dbApi.settingsRepo.set(db, key, value));
-ipcMain.handle("report:summary", (e, { start, end }) => dbApi.reports.getSummary(db, start, end));
+function buildReceiptHTML(data) {
+  const items = (data.items || []).map(
+    i => `<tr><td>${i.name}</td><td style="text-align:right">${i.qty}</td><td style="text-align:right">${i.unit}</td><td style="text-align:right">${i.total}</td></tr>`
+  ).join("");
+  return `
+  <html><head><meta charset="utf-8">
+  <style>
+    body{ font-family: monospace; width: 280px; }
+    table{ width:100%; border-collapse:collapse; }
+    td{ padding:2px 0; }
+    h3, h4 { margin: 4px 0; text-align:center; }
+    hr { border: 0; border-top: 1px dashed #333; margin: 6px 0; }
+  </style></head>
+  <body>
+    <h3>${data.header?.title || "EMR POS"}</h3>
+    <h4>${data.header?.date || ""}</h4>
+    <table>${items}</table>
+    <hr/>
+    <table>
+      <tr><td>Ara Toplam</td><td style="text-align:right">${data.summary?.subtotal ?? ""}</td></tr>
+      <tr><td>KDV</td><td style="text-align:right">${data.summary?.vat ?? ""}</td></tr>
+      <tr><td><b>TOPLAM</b></td><td style="text-align:right"><b>${data.summary?.total ?? ""}</b></td></tr>
+      <tr><td>Ödeme</td><td style="text-align:right">${data.summary?.payment ?? ""}</td></tr>
+    </table>
+    <p style="text-align:center">${data.footer || "Teşekkür ederiz"}</p>
+  </body></html>`;
+}
+
+process.on("unhandledRejection", (r) => { console.error(r); });
+process.on("uncaughtException",  (e) => { console.error(e); });

@@ -1,7 +1,6 @@
 // electron/preload.cjs
 const { contextBridge, ipcRenderer } = require("electron");
 
-// Tek noktadan API
 const api = {
   // ÜRÜNLER
   products: {
@@ -26,41 +25,36 @@ const api = {
     summary: ({ start, end }) => ipcRenderer.invoke("report:summary", { start, end }),
   },
 
-  // SİSTEM
-  system: {
-    getPrinters: () => ipcRenderer.invoke("system:getPrinters"),
-    printReceipt: (data) => ipcRenderer.invoke("print:receipt", data),
-  },
-
-  // GERİYE DÖNÜK: eski bundle 'getSetting' bekliyor
+  // ESKİ ADLAR (geriye dönük)
   getSetting: (key) => ipcRenderer.invoke("db:settings:get", key),
   setSetting: (key, value) => ipcRenderer.invoke("db:settings:set", { key, value }),
 };
 
-// Preload çalıştığını logla
-console.log("[preload] exposing window.api");
+// Modern isim
+contextBridge.exposeInMainWorld("api", api);
 
-// contextBridge ile ana dünyaya ver
+// Eski isimleri bekleyen bundle’lar için uyumluluk katmanı
+const electronAPI = {
+  listProducts: () => ipcRenderer.invoke("db:products:list"),
+  findProductByBarcode: (barcode) => ipcRenderer.invoke("db:products:findByBarcode", barcode),
+  insertProduct: (product) => ipcRenderer.invoke("db:products:insert", product),
+  getSetting: (key) => ipcRenderer.invoke("db:settings:get", key),
+  setSetting: (key, value) => ipcRenderer.invoke("db:settings:set", { key, value }),
+  summaryReport: (range) => ipcRenderer.invoke("report:summary", range),
+  getPrinters: () => ipcRenderer.invoke("system:getPrinters"),
+  printReceipt: (data) => ipcRenderer.invoke("print:receipt", data),
+};
+contextBridge.exposeInMainWorld("electronAPI", electronAPI);
+
+// Konsol bilgi
 try {
-  contextBridge.exposeInMainWorld("api", api);
-} catch (e) {
-  console.error("[preload] exposeInMainWorld hata:", e);
-}
-
-// Ek güvenlik: bazı bundler’lar farklı isimler bekleyebiliyor.
-// Aynı nesneyi alternatif isimlerle de (read-only) verelim.
-try { contextBridge.exposeInMainWorld("electronAPI", api); } catch {}
-try { contextBridge.exposeInMainWorld("electron",    api); } catch {}
-
-// Son çare: DOM yüklendikten hemen sonra window.api yoksa at
-window.addEventListener("DOMContentLoaded", () => {
-  if (!window.api) {
-    // eslint-disable-next-line no-undef
+  if (!globalThis.api) {
     globalThis.api = api;
-    // eslint-disable-next-line no-undef
-    globalThis.electronAPI = api;
-    // eslint-disable-next-line no-undef
-    globalThis.electron = api;
-    console.warn("[preload] window.api yoktu, globalThis üzerinden eklendi.");
+    console.log("[preload] window.api yoktu, globalThis üzerinden eklendi.");
   }
-});
+  if (!globalThis.electronAPI) {
+    globalThis.electronAPI = electronAPI;
+    console.log("[preload] window.electronAPI yoktu, globalThis üzerinden eklendi.");
+  }
+  console.log("[preload] exposing window.api");
+} catch {}
