@@ -30,22 +30,17 @@
     "vite": "^5.4.19"
   },
   "build": {
-  "asar": true,
-  "asarUnpack": ["**/*.node", "electron/preload.cjs"],
-  "files": [
-    "electron/**/*",
-    "shared-db/**/*",
-    "dist/**/*",
-    "package.json"
-  ],
-  "win": { "target": ["nsis"], "signAndEditExecutable": false, "forceCodeSigning": false },
-  "publish": ["github"]
-}
-    "extraResources": [
-      {
-        "from": "electron/ip-config.json",
-        "to": "electron/ip-config.json"
-      }
+    "appId": "com.emrcore.pos",
+    "productName": "EMR POS",
+    "directories": { "output": "release" },
+    "artifactName": "EMR-POS-${version}-Setup.${ext}",
+    "asar": true,
+    "asarUnpack": ["**/*.node", "electron/preload.cjs"],
+    "files": [
+      "electron/**/*",
+      "shared-db/**/*",
+      "dist/**/*",
+      "package.json"
     ],
     "win": {
       "target": ["nsis"],
@@ -59,9 +54,7 @@
       "createDesktopShortcut": true,
       "shortcutName": "EMR POS"
     },
-    "publish": [
-      "github"
-    ]
+    "publish": ["github"]
   },
   "repository": {
     "type": "git",
