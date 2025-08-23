@@ -4,45 +4,25 @@ const path = require("path");
 const fs = require("fs");
 const { pathToFileURL } = require("url");
 
-function toFileUrl(p) { return pathToFileURL(p).href; }
-
-async function importESM(absPath) {
-  return import(toFileUrl(absPath));
+function fromApp(...p) {
+  // asar içinde çalışırken app.getAppPath() -> .../resources/app.asar
+  return path.join(app.getAppPath(), ...p);
 }
+function fileUrl(p) { return pathToFileURL(p).href; }
 
-function resolveFromAppRoot(...segments) {
-  // app.getAppPath() => ...\resources\app.asar  (veya dev’de proje kökü)
-  const appRoot = app.getAppPath();
-  return path.join(appRoot, ...segments);
-}
-
-let dbApi = null;
 async function loadDbApi() {
-  // 1) Önce tek giriş noktası (index.cjs) varsa onu yükle
-  const idx = resolveFromAppRoot("shared-db", "index.cjs");
-  if (fs.existsSync(idx)) {
-    dbApi = await importESM(idx);
-    return;
+  // shared-db index.cjs varsa CJS üzerinden alınır; yoksa ESM dosyaları dinamik import edilir.
+  const cjsIndex = fromApp("shared-db", "index.cjs");
+  if (fs.existsSync(cjsIndex)) {
+    return require(cjsIndex);
   }
-  // 2) Tek tek modülleri yükle (pakete girmişse)
-  const dbJs          = resolveFromAppRoot("shared-db", "db.js");
-  const productsJs    = resolveFromAppRoot("shared-db", "repositories", "productsRepo.js");
-  const salesJs       = resolveFromAppRoot("shared-db", "repositories", "salesRepo.js");
-  const settingsJs    = resolveFromAppRoot("shared-db", "repositories", "settingsRepo.js");
-  const reportsJs     = resolveFromAppRoot("shared-db", "repositories", "reportsRepo.js");
-
-  // Yoksa net hata göster
-  const missing = [dbJs, productsJs, salesJs, settingsJs, reportsJs].filter(p => !fs.existsSync(p));
-  if (missing.length) {
-    throw new Error("shared-db paketlenmemiş. Eksik dosyalar:\n" + missing.join("\n"));
-  }
-
-  const openDbMod    = await importESM(dbJs);
-  const productsRepo = await importESM(productsJs);
-  const salesRepo    = await importESM(salesJs);
-  const settingsRepo = await importESM(settingsJs);
-  const reports      = await importESM(reportsJs);
-  dbApi = {
+  const base = fromApp("shared-db");
+  const openDbMod    = await import(fileUrl(path.join(base, "db.js")));
+  const productsRepo = await import(fileUrl(path.join(base, "repositories", "productsRepo.js")));
+  const salesRepo    = await import(fileUrl(path.join(base, "repositories", "salesRepo.js")));
+  const settingsRepo = await import(fileUrl(path.join(base, "repositories", "settingsRepo.js")));
+  const reports      = await import(fileUrl(path.join(base, "repositories", "reportsRepo.js")));
+  return {
     openDb: openDbMod.openDb || openDbMod.default || openDbMod,
     productsRepo: productsRepo.default || productsRepo,
     salesRepo: salesRepo.default || salesRepo,
@@ -51,7 +31,7 @@ async function loadDbApi() {
   };
 }
 
-let win, db;
+let win, db, dbApi;
 
 function createWindow() {
   win = new BrowserWindow({
@@ -69,24 +49,23 @@ function createWindow() {
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
-    // prod: dist/index.html (asar içinde)
-    win.loadFile(resolveFromAppRoot("dist", "index.html"));
+    win.loadFile(path.join(__dirname, "../index.html"));
   }
 }
 
 app.whenReady().then(async () => {
   try {
-    await loadDbApi();
+    dbApi = await loadDbApi();
 
-    // DB dizini: userData (Windows: %APPDATA%\EMR POS)
+    // DB dosyaları: %APPDATA%/EMR POS (Windows) vs ~/Library/App... (mac) vs ~/.config/EMR POS (linux)
     const dataDir = app.getPath("userData");
-    fs.mkdirSync(path.join(dataDir, "data"), { recursive: true }); // garanti olsun
+    fs.mkdirSync(dataDir, { recursive: true });
+    db = dbApi.openDb(dataDir);
 
-    db = dbApi.openDb(dataDir); // shared-db/db.js bunu kullanıyor olmalı
     createWindow();
   } catch (err) {
     console.error(err);
-    dialog.showErrorBox("Başlatma Hatası", String(err?.stack || err));
+    dialog.showErrorBox("Başlatma Hatası", String(err && err.stack || err));
     app.quit();
   }
 });
@@ -143,5 +122,5 @@ function buildReceiptHTML(data) {
   </body></html>`;
 }
 
-process.on("unhandledRejection", e => console.error(e));
-process.on("uncaughtException", e => console.error(e));
+process.on("unhandledRejection", (r) => { console.error(r); });
+process.on("uncaughtException", (e) => { console.error(e); });
