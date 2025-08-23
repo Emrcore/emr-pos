@@ -1,4 +1,4 @@
-import { v4 as uuid } from "uuid";
+import { v4 as uuidv4 } from "../vendor/uuid.js";
 import { updateStock } from "./productsRepo.js";
 
 export function create(db, payload) {

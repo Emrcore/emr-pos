@@ -1,4 +1,4 @@
-import { v4 as uuid } from "uuid";
+import { v4 as uuidv4 } from "../vendor/uuid.js";
 
 export function list(db) {
   return db.prepare("SELECT * FROM products ORDER BY name").all();
