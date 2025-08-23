@@ -2,34 +2,65 @@
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const { pathToFileURL } = require("url");
+
+function toFileUrl(p) { return pathToFileURL(p).href; }
+async function importESM(p) { return import(toFileUrl(p)); }
 
 let win, db, dbApi;
 
-function loadDbApi() {
-  // Asar içi ve dışı olasılıkları sırayla dene
-  const candidates = [
-    // üretimde (__dirname -> resources/app.asar/electron)
-    path.join(__dirname, "..", "shared-db", "index.mjs"),
-    // bazen extraResources ile kopyalanırsa:
-    path.join(process.resourcesPath, "shared-db", "index.mjs"),
-    // geliştirme ortamı (repo kökü)
-    path.join(process.cwd(), "shared-db", "index.mjs"),
-  ];
-
+// ---- shared-db'yi her koşulda import() ile yükle ----
+async function loadDbApi() {
   const tried = [];
-  for (const p of candidates) {
+  const tryImport = async (p) => {
     try {
-      if (fs.existsSync(p)) {
-        // CJS köprümüz: require yeterli
-        // eslint-disable-next-line import/no-dynamic-require, global-require
-        const mod = require(p);
-        return mod;
-      }
-      tried.push(`yok: ${p}`);
+      if (!fs.existsSync(p)) { tried.push(`yok: ${p}`); return null; }
+      const mod = await importESM(p);
+      return mod?.default ?? mod; // { openDb, productsRepo, ... } bekliyoruz
     } catch (e) {
       tried.push(`${p} -> ${e.message}`);
+      return null;
     }
+  };
+
+  // 1) Önce asar içi, sonra dışı ve repo kökü
+  const direct = [
+    path.join(process.resourcesPath, "app.asar", "shared-db", "index.mjs"),
+    path.join(process.resourcesPath,              "shared-db", "index.mjs"),
+    path.join(__dirname, "..",                    "shared-db", "index.mjs"),
+    // eski kurulum/fallback:
+    path.join(process.resourcesPath, "app.asar", "shared-db", "index.cjs"),
+    path.join(process.resourcesPath,              "shared-db", "index.cjs"),
+    path.join(__dirname, "..",                    "shared-db", "index.cjs"),
+  ];
+  for (const p of direct) {
+    const m = await tryImport(p);
+    if (m) return m;
   }
+
+  // 2) index yoksa tek tek modüller
+  const roots = [
+    path.join(process.resourcesPath, "app.asar", "shared-db"),
+    path.join(process.resourcesPath,              "shared-db"),
+    path.join(__dirname, "..",                    "shared-db"),
+  ];
+  for (const root of roots) {
+    const openDbMod    = await tryImport(path.join(root, "db.js"));
+    if (!openDbMod) continue; // bu kökte shared-db yok
+    const productsRepo = await tryImport(path.join(root, "repositories", "productsRepo.js"));
+    const salesRepo    = await tryImport(path.join(root, "repositories", "salesRepo.js"));
+    const settingsRepo = await tryImport(path.join(root, "repositories", "settingsRepo.js"));
+    const reports      = await tryImport(path.join(root, "repositories", "reportsRepo.js"));
+
+    return {
+      openDb: openDbMod.openDb ?? openDbMod,
+      productsRepo: productsRepo ?? {},
+      salesRepo:    salesRepo    ?? {},
+      settingsRepo: settingsRepo ?? {},
+      reports:      reports      ?? {},
+    };
+  }
+
   throw new Error("shared-db yüklenemedi:\n" + tried.map(s => " - " + s).join("\n"));
 }
 
@@ -62,9 +93,9 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   try {
-    dbApi = loadDbApi();
+    dbApi = await loadDbApi();
     const dataDir = app.getPath("userData");
     db = dbApi.openDb(dataDir);
     createWindow();
@@ -82,12 +113,9 @@ app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) creat
 ipcMain.handle("db:products:list", () => dbApi.productsRepo.list(db));
 ipcMain.handle("db:products:findByBarcode", (e, barcode) => dbApi.productsRepo.findByBarcode(db, barcode));
 ipcMain.handle("db:products:insert", (e, product) => dbApi.productsRepo.insert(db, product));
-
 ipcMain.handle("db:sales:create", (e, payload) => dbApi.salesRepo.create(db, payload));
-
 ipcMain.handle("db:settings:get", (e, key) => dbApi.settingsRepo.get(db, key));
 ipcMain.handle("db:settings:set", (e, { key, value }) => dbApi.settingsRepo.set(db, key, value));
-
 ipcMain.handle("report:summary", (e, { start, end }) => dbApi.reports.getSummary(db, start, end));
 
 ipcMain.handle("system:getPrinters", () => win.webContents.getPrinters());
