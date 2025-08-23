@@ -35,12 +35,18 @@
     "directories": { "output": "release" },
     "artifactName": "EMR-POS-${version}-Setup.${ext}",
     "asar": true,
-    "asarUnpack": ["**/*.node", "electron/preload.cjs"],
+    "asarUnpack": [
+      "**/*.node",
+      "electron/preload.cjs"
+    ],
     "files": [
       "electron/**/*",
-      "shared-db/**/*",
       "dist/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      { "from": "shared-db/", "to": "shared-db" },
+      { "from": "electron/ip-config.json", "to": "electron/ip-config.json" }
     ],
     "win": {
       "target": ["nsis"],
