@@ -40,6 +40,70 @@ function extendLongPathWin(p) {
   return p;
 }
 
+function hasColumn(db, table, col) {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all();
+  return rows.some(r => r.name === col);
+}
+function ensureColumn(db, table, col, sqlTypeAndDefault) {
+  if (!hasColumn(db, table, col)) {
+    db.prepare(`ALTER TABLE ${table} ADD COLUMN ${col} ${sqlTypeAndDefault}`).run();
+  }
+}
+
+/** ilk kurulum + güvenli migrasyonlar */
+function migrate(db) {
+  // PRODUCTS: tam þema ile yarat
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS products (
+      id        TEXT PRIMARY KEY,
+      barcode   TEXT UNIQUE,
+      name      TEXT NOT NULL,
+      price     REAL NOT NULL,
+      stock     REAL DEFAULT 0,
+      vat_rate  REAL DEFAULT 0.20,
+      updated_at INTEGER,
+      createdAt TEXT DEFAULT (datetime('now'))
+    )
+  `).run();
+
+  // Eksikler için migrasyon (eski kurulumlar)
+  ensureColumn(db, "products", "vat_rate",  "REAL DEFAULT 0.20");
+  ensureColumn(db, "products", "updated_at","INTEGER");
+
+  // SETTINGS
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )
+  `).run();
+
+  // SALES
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS sales (
+      id        TEXT PRIMARY KEY,
+      total     REAL NOT NULL,
+      payment   TEXT,
+      createdAt TEXT DEFAULT (datetime('now'))
+    )
+  `).run();
+
+  // SALE ITEMS
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS sale_items (
+      id         TEXT PRIMARY KEY,
+      saleId     TEXT NOT NULL,
+      productId  TEXT,
+      name       TEXT NOT NULL,
+      qty        REAL NOT NULL,
+      unitPrice  REAL NOT NULL,
+      total      REAL NOT NULL,
+      FOREIGN KEY (saleId)    REFERENCES sales(id)   ON DELETE CASCADE,
+      FOREIGN KEY (productId) REFERENCES products(id)
+    )
+  `).run();
+}
+
 /**
  * baseDir = app.getPath('userData') gönderin.
  * Gerekirse LOCALAPPDATA ve temp'e düþer. DB açar ve döndürür.
@@ -77,48 +141,9 @@ export function openDb(baseDir) {
   db.pragma("foreign_keys = ON");
   db.pragma("synchronous = NORMAL");
 
-  db.prepare(`
-    CREATE TABLE IF NOT EXISTS products (
-      id TEXT PRIMARY KEY,
-      barcode TEXT UNIQUE,
-      name TEXT NOT NULL,
-      price REAL NOT NULL,
-      stock REAL DEFAULT 0,
-      createdAt TEXT DEFAULT (datetime('now'))
-    )
-  `).run();
+  migrate(db); // <-- kritik
 
-  db.prepare(`
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    )
-  `).run();
-
-  db.prepare(`
-    CREATE TABLE IF NOT EXISTS sales (
-      id TEXT PRIMARY KEY,
-      total REAL NOT NULL,
-      payment TEXT,
-      createdAt TEXT DEFAULT (datetime('now'))
-    )
-  `).run();
-
-  db.prepare(`
-    CREATE TABLE IF NOT EXISTS sale_items (
-      id TEXT PRIMARY KEY,
-      saleId TEXT NOT NULL,
-      productId TEXT,
-      name TEXT NOT NULL,
-      qty REAL NOT NULL,
-      unitPrice REAL NOT NULL,
-      total REAL NOT NULL,
-      FOREIGN KEY (saleId) REFERENCES sales(id) ON DELETE CASCADE,
-      FOREIGN KEY (productId) REFERENCES products(id)
-    )
-  `).run();
-
-  return db; // <-- KRÝTÝK: DB nesnesi döndürülüyor
+  return db; // DB nesnesi
 }
 
 export default { openDb };
