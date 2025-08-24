@@ -2,59 +2,50 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 const api = {
-  // ÜRÜNLER
+  // Yeni API
   products: {
     list: () => ipcRenderer.invoke("db:products:list"),
     findByBarcode: (barcode) => ipcRenderer.invoke("db:products:findByBarcode", barcode),
     insert: (product) => ipcRenderer.invoke("db:products:insert", product),
   },
-
-  // SATIŞ
   sales: {
     create: (payload) => ipcRenderer.invoke("db:sales:create", payload),
   },
-
-  // AYARLAR
   settings: {
     get: (key) => ipcRenderer.invoke("db:settings:get", key),
     set: (key, value) => ipcRenderer.invoke("db:settings:set", { key, value }),
   },
-
-  // RAPOR
   reports: {
     summary: ({ start, end }) => ipcRenderer.invoke("report:summary", { start, end }),
   },
+  system: {
+    getPrinters: () => ipcRenderer.invoke("system:getPrinters"),
+    printReceipt: (data) => ipcRenderer.invoke("print:receipt", data),
+  },
 
-  // ESKİ ADLAR (geriye dönük)
-  getSetting: (key) => ipcRenderer.invoke("db:settings:get", key),
-  setSetting: (key, value) => ipcRenderer.invoke("db:settings:set", { key, value }),
-};
-
-// Modern isim
-contextBridge.exposeInMainWorld("api", api);
-
-// Eski isimleri bekleyen bundle’lar için uyumluluk katmanı
-const electronAPI = {
+  // --- GERİYE DÖNÜK UYUMLULUK (renderer eski adları kullanıyorsa) ---
+  // bazı bundle’larda window.electronAPI.* ve düz fonksiyon isimleri bekleniyor
   listProducts: () => ipcRenderer.invoke("db:products:list"),
   findProductByBarcode: (barcode) => ipcRenderer.invoke("db:products:findByBarcode", barcode),
   insertProduct: (product) => ipcRenderer.invoke("db:products:insert", product),
+
+  createSale: (payload) => ipcRenderer.invoke("db:sales:create", payload),
+
   getSetting: (key) => ipcRenderer.invoke("db:settings:get", key),
   setSetting: (key, value) => ipcRenderer.invoke("db:settings:set", { key, value }),
-  summaryReport: (range) => ipcRenderer.invoke("report:summary", range),
-  getPrinters: () => ipcRenderer.invoke("system:getPrinters"),
-  printReceipt: (data) => ipcRenderer.invoke("print:receipt", data),
-};
-contextBridge.exposeInMainWorld("electronAPI", electronAPI);
 
-// Konsol bilgi
+  reportSummary: ({ start, end }) => ipcRenderer.invoke("report:summary", { start, end }),
+
+  getPrinters: () => ipcRenderer.invoke("system:getPrinters"),
+  printReceiptLegacy: (data) => ipcRenderer.invoke("print:receipt", data),
+};
+
+// Hem window.api hem window.electronAPI olarak verelim
 try {
-  if (!globalThis.api) {
-    globalThis.api = api;
-    console.log("[preload] window.api yoktu, globalThis üzerinden eklendi.");
-  }
-  if (!globalThis.electronAPI) {
-    globalThis.electronAPI = electronAPI;
-    console.log("[preload] window.electronAPI yoktu, globalThis üzerinden eklendi.");
-  }
-  console.log("[preload] exposing window.api");
-} catch {}
+  contextBridge.exposeInMainWorld("api", api);
+  contextBridge.exposeInMainWorld("electronAPI", api);
+} catch (_) {
+  // contextIsolation=false ise fallback
+  globalThis.api = api;
+  globalThis.electronAPI = api;
+}

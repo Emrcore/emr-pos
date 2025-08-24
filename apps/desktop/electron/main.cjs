@@ -27,7 +27,7 @@ async function normalizeDbApi(mod) {
 async function loadDbApi() {
   const roots = [
     path.join(__dirname, "..", "shared-db"),           // asar içi
-    path.join(process.resourcesPath, "shared-db"),     // asar dışı kopya (extraResources)
+    path.join(process.resourcesPath, "shared-db"),     // extraResources (asar dışı kopya)
     path.join(process.cwd(), "shared-db"),             // dev olasılığı
   ];
   const files = ["index.mjs", "index.js", "index.cjs"];
@@ -102,7 +102,19 @@ function registerIpc() {
 
   ipcMain.handle("report:summary", (_e, { start, end }) => dbApi.reports.getSummary(db, start, end));
 
-  ipcMain.handle("system:getPrinters", () => win.webContents.getPrinters());
+  // Yazıcı listesi: getPrinters() / getPrintersAsync() fallback
+  ipcMain.handle("system:getPrinters", async () => {
+    const wc = win?.webContents;
+    if (!wc) return [];
+    if (typeof wc.getPrinters === "function") {
+      try { return wc.getPrinters(); } catch (_) { /* fall through */ }
+    }
+    if (typeof wc.getPrintersAsync === "function") {
+      try { return await wc.getPrintersAsync(); } catch (_) { /* fall through */ }
+    }
+    return [];
+  });
+
   ipcMain.handle("print:receipt", async (_e, data) => {
     const p = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
     const html = buildReceiptHTML(data);
